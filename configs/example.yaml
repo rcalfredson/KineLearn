@@ -1,0 +1,8 @@
+behaviors:               # list of behavior labels
+  - string
+
+features:
+  distances:             # list of 2-element lists
+    - [keypoint_1, keypoint_2]
+  angles:                # list of 3-element lists
+    - [keypoint_1, keypoint_2, keypoint_3]

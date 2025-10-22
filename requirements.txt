@@ -5,6 +5,7 @@ numpy
 opencv-python
 pandas
 pyarrow
+PyYAML
 scikit-learn
 seaborn
 tensorflow[and-cuda]

@@ -208,3 +208,9 @@ __marimo__/
 
 # Editor
 .vscode
+
+# Project
+features/*
+!features/.gitkeep
+video_lists/*
+!video_lists/example.yaml

@@ -1,0 +1,26 @@
+behaviors:
+  - back_leg_together
+  - genitalia_extension
+
+features:
+  distances:
+    - [head, thorax]
+    - [thorax, abdomen]
+    - [thorax, genitalia_tip]
+    - [abdomen, abdomen_tip]
+    - [head, left_front_leg_tip]
+    - [head, right_front_leg_tip]
+    - [abdomen, left_back_leg_tip]
+    - [abdomen, right_back_leg_tip]
+    - [thorax, left_wing_tip]
+    - [thorax, right_wing_tip]
+  angles:
+    - [head, thorax, abdomen]
+    - [thorax, abdomen, abdomen_tip]
+    - [thorax, abdomen, genitalia_tip]
+    - [thorax, left_wing_tip, abdomen]
+    - [thorax, right_wing_tip, abdomen]
+    - [head, left_front_leg_tip, thorax]
+    - [head, right_front_leg_tip, thorax]
+    - [abdomen, left_back_leg_tip, thorax]
+    - [abdomen, right_back_leg_tip, thorax]
