@@ -2,8 +2,10 @@ import argparse
 from pathlib import Path
 
 import cv2
+import pandas as pd
 import yaml
 
+from KineLearn.core.features import extract_features
 from KineLearn.core.keypoints import convert_h5_to_csv
 from KineLearn.core.path import find_unique
 
@@ -34,6 +36,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    output_dir = Path(args.out)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load videos
     with open(args.v, "r") as f:
@@ -81,7 +86,6 @@ def main():
         csv_pattern = f"{basename}DLC*{task}{date}*.csv"
         h5_pattern = f"{basename}DLC*{task}{date}*.h5"
 
-
         dlc_file = find_unique(video_dir, [csv_pattern], must_contain="DLC")
 
         if dlc_file is None:
@@ -93,6 +97,18 @@ def main():
                 raise FileNotFoundError(
                     f"No DLC CSV found for video {basename} (Task={task}, date={date}) in {video_dir}"
                 )
+
+        # Get ground truth label file
+        tsv_pattern = f"*{video_path.stem}*.tsv"
+        labels_file = find_unique(video_dir, [tsv_pattern], must_contain="ground_truth")
+        features_csv = output_dir / f"extracted_features_{video_path.stem}.csv"
+
+        df_combined, df_xy, df_p = extract_features(dlc_file, kl_config)
+
+        df_out = pd.concat([df_combined, df_p], axis=1)
+        df_out.to_csv(features_csv, index=False)
+        print(f"Features written: {features_csv}")
+        input()
 
 
 if __name__ == "__main__":
