@@ -214,5 +214,7 @@ configs/*
 !configs/example.yaml
 features/*
 !features/.gitkeep
+scalers/*
+!scalers/.gitkeep
 video_lists/*
 !video_lists/example.yaml
