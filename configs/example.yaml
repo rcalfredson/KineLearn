@@ -1,3 +1,5 @@
+dlc_config: /path/to/your/dlc/config.yaml
+
 behaviors:               # list of behavior labels
   - string
 

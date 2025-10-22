@@ -210,6 +210,8 @@ __marimo__/
 .vscode
 
 # Project
+configs/*
+!configs/example.yaml
 features/*
 !features/.gitkeep
 video_lists/*

@@ -8,4 +8,5 @@ pyarrow
 PyYAML
 scikit-learn
 seaborn
+tables
 tensorflow[and-cuda]
