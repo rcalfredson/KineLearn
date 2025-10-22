@@ -3,7 +3,8 @@ import argparse
 import cv2
 import yaml
 
-if __name__ == "__main__":
+
+def main():
     parser = argparse.ArgumentParser(description="Calculate features from DLC outputs.")
     parser.add_argument(
         "-v",
@@ -49,3 +50,7 @@ if __name__ == "__main__":
         raise ValueError(f"Mixed FPS detected: {sorted(unique_fps)}")
     fps = unique_fps.pop()
     print(f"FPS: {fps}")
+
+
+if __name__ == "__main__":
+    main()
