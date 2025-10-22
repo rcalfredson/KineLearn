@@ -1,0 +1,10 @@
+joblib
+keras
+matplotlib
+numpy
+opencv-python
+pandas
+pyarrow
+scikit-learn
+seaborn
+tensorflow[and-cuda]
