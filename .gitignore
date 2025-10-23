@@ -216,5 +216,7 @@ features/*
 !features/.gitkeep
 scalers/*
 !scalers/.gitkeep
+data_splits/*
+!data_splits/.gitkeep
 video_lists/*
 !video_lists/example.yaml

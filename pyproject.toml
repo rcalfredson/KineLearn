@@ -16,3 +16,4 @@ where = ["src"]
 
 [project.scripts]
 kinelearn-calc = "KineLearn.scripts.calculate_features:main"
+kinelearn-split = "KineLearn.scripts.split_dataset:main"
