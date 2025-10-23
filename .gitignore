@@ -214,6 +214,8 @@ configs/*
 !configs/example.yaml
 features/*
 !features/.gitkeep
+results/*
+!results/*.gitkeep
 scalers/*
 !scalers/.gitkeep
 data_splits/*
