@@ -3,10 +3,12 @@ from pathlib import Path
 
 import cv2
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import yaml
 
+from KineLearn.core.behavior import parse_boris_labels
 from KineLearn.core.features import extract_features
 from KineLearn.core.keypoints import convert_h5_to_csv
 from KineLearn.core.path import find_unique
@@ -118,9 +120,6 @@ def main():
                     f"No DLC CSV found for video {basename} (Task={task}, date={date}) in {video_dir}"
                 )
 
-        # Get ground truth label file
-        tsv_pattern = f"*{video_path.stem}*.tsv"
-        # labels_file = find_unique(video_dir, [tsv_pattern], must_contain="ground_truth")
         features_csv = output_dir / f"extracted_features_{video_path.stem}.csv"
 
         df_combined, df_xy, df_p = extract_features(dlc_file, kl_config)
@@ -145,12 +144,17 @@ def main():
         for ft, df_list in training_features_dict.items():
             if not df_list:
                 continue
+            if ft == "coordinates":
+                print(
+                    f"Skipping scaler for '{ft}' (relative coordinates are already normalized)"
+                )
+                continue
             all_data = pd.concat(df_list, ignore_index=True)
             scaler = StandardScaler().fit(all_data)
 
             scaler_path = scaler_dir / f"scaler_{config_stem}_{ft}.pkl"
             joblib.dump(scaler, scaler_path)
-            scalers[ft] = scaler_path
+            scalers[ft] = scaler
             kl_config["scalers"][ft] = str(scaler_path)
 
             print(f"  → saved {ft} scaler: {scaler_path}")
@@ -174,6 +178,64 @@ def main():
                 raise FileNotFoundError(f"Scaler file not found: {path}")
             scalers[ft] = joblib.load(path)
             print(f"Loaded existing scaler for {ft}: {path}")
+
+    # Export scaled per-frame features and labels
+    print("\nExporting scaled per-frame features and labels...")
+
+    behaviors = kl_config.get("behaviors", [])
+    for video_path_str in video_paths:
+        video_path = Path(video_path_str)
+        video_dir = video_path.parent
+        basename = video_path.stem
+
+        # Locate DLC CSV
+        task = dlc_config["Task"]
+        date = dlc_config["date"]
+        csv_pattern = f"{basename}DLC*{task}{date}*.csv"
+        dlc_file = find_unique(video_dir, [csv_pattern], must_contain="DLC")
+        if dlc_file is None:
+            raise FileNotFoundError(f"No DLC CSV found for {basename}")
+
+        # Extract features again (fresh for scaling)
+        df_combined, df_xy, df_p = extract_features(dlc_file, kl_config)
+        parts = [df_combined[df_xy.columns]]  # absolute coordinates (unscaled)
+        for ft in ["coordinates", "velocity", "acceleration", "angles", "distances"]:
+            sel = df_combined.filter(like=prefix_map[ft])
+            if sel.empty:
+                continue
+            if ft == "coordinates":
+                # Relative coordinates are already normalized - do not scale
+                parts.append(sel.copy())
+                continue
+            if not sel.empty:
+                scaled = scalers[ft].transform(sel)
+                parts.append(pd.DataFrame(scaled, columns=sel.columns))
+        parts.append(df_p.copy())
+
+        df_scaled = pd.concat(parts, axis=1)
+
+        # Mean-impute any NaNs
+        df_scaled = df_scaled.copy()
+        df_scaled.fillna(df_scaled.mean(), inplace=True)
+
+        # Labels (if ground truth exists)
+        tsv_pattern = f"*{basename}*.tsv"
+        labels_file = find_unique(video_dir, [tsv_pattern], must_contain="ground_truth")
+        if labels_file:
+            df_labels = parse_boris_labels(behaviors, labels_file, len(df_scaled))
+        else:
+            df_labels = pd.DataFrame(
+                0, index=np.arange(len(df_scaled)), columns=behaviors
+            )
+
+        # Save to Parquet
+        feat_path = output_dir / f"frame_features_{basename}.parquet"
+        lab_path = output_dir / f"frame_labels_{basename}.parquet"
+        df_scaled.to_parquet(feat_path, index=False)
+        df_labels.to_parquet(lab_path, index=False)
+
+        print(f"Saved features → {feat_path}")
+        print(f"Saved labels   → {lab_path}")
 
 
 if __name__ == "__main__":
