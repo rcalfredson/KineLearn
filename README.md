@@ -6,8 +6,15 @@ It builds on DeepLabCut keypoint data to extract interpretable kinematic feature
 
 Currently, KineLearn focuses on **feature extraction and normalization**, serving as the foundation for upcoming modules that will handle **model training**, **prediction**, and **visualization**.
 
-➡️ See [Using KineLearn to Generate Features](#-using-kinelearn-to-generate-features) for setup and usage.
+## Table of Contents
+- [Installation](#installation)
+- [🧩 Using KineLearn to Generate Features](#-using-kinelearn-to-generate-features)
+- [🧭 Splitting Data into Train and Test Sets](#-splitting-data-into-train-and-test-sets)
+- [🧠 Training a Behavior Classifier](#-training-a-behavior-classifier)
+- [📊 Evaluating Predictions](#-evaluating-predictions)
+- [🎨 Visualizing Behavioral Dynamics](#-visualizing-behavioral-dynamics)
 
+---
 
 ## Installation
 
@@ -195,6 +202,99 @@ scalers/
 * For DeepLabCut `.h5` files, KineLearn will convert them to `.csv` automatically.
 * Missing or incomplete feature data are mean-imputed during export.
 * Behavior labels not found in BORIS exports default to zeros (no behavior active).
+
+---
+## 🧭 Splitting Data into Train and Test Sets
+
+Once you have generated the feature and label files for your videos,
+the next step is to divide them into **training** and **testing** sets.
+
+KineLearn provides a command-line tool for this: `kinelearn-split`.
+
+---
+
+### 1. Create a split
+
+```bash
+kinelearn-split \
+  -v video_lists/all_videos.yaml \
+  --seed 42
+```
+
+This command:
+* Reads the list of video paths from the YAML file (`-v`).
+* Randomly splits the videos into train and test sets (80/20 by default).
+* Saves the split information as a YAML file under `data_splits/`.
+
+Example auto-generated filename:
+
+```
+data_splits/all_videos_split_20251023_153805.yaml
+```
+
+---
+
+### 2. Customize the split
+
+You can control the split behavior with optional flags:
+
+| **Flag** | **Description** | **Default** |
+| :--- | :--- | :--- |
+| `--seed` | Sets a random seed for reproducible splits. | None |
+| `--test-fraction` | Fraction of videos to reserve for testing. | 0.2 |
+| `--out` | Custom path for the split output YAML file. | Automatically generated under `data_splits/` |
+
+Example:
+
+```
+kinelearn-split \
+  -v video_lists/july_sessions.yaml \
+  --test-fraction 0.25 \
+  --seed 123 \
+  --out data_splits/july_sessions_split.yaml
+```
+
+---
+
+### 3. Split file format
+The generated YAML file lists which video stems belong to each set:
+
+```yaml
+seed: 42
+test_fraction: 0.2
+train:
+  - fly_001
+  - fly_002
+  - fly_003
+test:
+  - fly_004
+```
+
+These stems correspond directly to the feature and label filenames, e.g., `frame_features_fly_001.parquet`, `frame_labels_fly_001.parquet`.
+
+---
+
+### ✅ Example output structure
+
+```
+data_splits/
+├── all_videos_split_20251023_153805.yaml
+features/
+├── frame_features_fly_001.parquet
+├── frame_labels_fly_001.parquet
+scalers/
+├── scaler_drosophila_velocity.pkl
+├── scaler_drosophila_angles.pkl
+
+```
+
+---
+
+### 🧠 Tips
+
+* The split uses only **filename stems** (not full paths), so it's flexible across systems.
+* The split file can be reused for consistent training/testing across multiple runs.
+* You can generate different splits (e.g., by session, condition, or date) and store them in `data_splits/`.
 
 ---
 ## 🧠 Training a Behavior Classifier
