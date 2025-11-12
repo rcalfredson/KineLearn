@@ -332,7 +332,37 @@ scalers/
 
 ---
 ## 🧠 Training a Behavior Classifier
-_Coming soon_
+
+The `kinelearn-train` command prepares datasets and hyperparameters for model training.
+
+At this stage, it performs:
+1. **Loading and validating data** — reads feature and label `.parquet` files for each video.
+2. **Splitting into train/val/test** — uses the split file from `kinelearn-split`, applying the validation fraction defined in your config.
+3. **Windowing the data** — converts frame-level features and labels into overlapping windows stored as efficient `.memmap` arrays.
+4. **Recording training settings** — saves a `results/train_manifest.yml` file summarizing dataset sizes, feature dimensions, and all training hyperparameters (including focal-loss α/γ values for the selected behavior).
+
+---
+
+### Example command
+
+```bash
+kinelearn-train \
+  --kl-config configs/drosophila.yaml \
+  --split data_splits/2025_jul_aug_split.yaml \
+  --behavior genitalia_extension
+```
+
+This will:
+- Prepare `train`, `val`, and `test` memmaps under `results/`
+- Print dataset statistics and focal-loss settings
+- Write a manifest file ready for the next step (model definition and fitting)
+
+---
+### Coming next
+The next phase will add:
+- A **data generator** that streams windowed data for each behavior.
+- **Model definition and training loop** using TensorFlow/Keras.
+- Automatic saving of model weights and training logs for evaluation.
 
 ---
 ## 📊 Evaluating Predictions

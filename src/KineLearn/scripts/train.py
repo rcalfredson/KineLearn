@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 KineLearn training (Step 1): load hyperparameters and dataset.
+Now also harmonizes training hyperparameters and resolves focal-loss alpha by behavior.
 
 This script:
 - Loads KineLearn config (and optional training hyperparameters)
@@ -19,6 +20,13 @@ from sklearn.model_selection import train_test_split
 import yaml
 
 from KineLearn.core.memmap import make_windowed_memmaps
+
+# (Optional for future training step)
+try:
+    import tensorflow as tf
+    from tensorflow.keras import backend as K
+except Exception:
+    tf = K = None
 
 
 # ----------------------------
@@ -124,6 +132,27 @@ def summarize_dataset(
     print(feature_cols[:10])
 
 
+def resolve_focal_params(training_cfg: Dict, behavior: str) -> tuple[float, float]:
+    """
+    Resolve focal loss alpha and gamma.
+    training_cfg may contain:
+      training["focal"] = {"alpha": <float or {behavior: float}, "gamma": <float>}
+    Falls back to alpha=0.7, gamma=2.0 if unspecified.
+    """
+    focal = training_cfg.get("focal", {}) or {}
+    alpha_cfg = focal.get("alpha", 0.7)
+    gamma = float(focal.get("gamma", 2.0))
+    if isinstance(alpha_cfg, dict):
+        if behavior not in alpha_cfg:
+            raise ValueError(
+                f"No focal.alpha specified for behavior '{behavior}'. Available: {list(alpha_cfg.keys())}"
+            )
+        alpha = float(alpha_cfg[behavior])
+    else:
+        alpha = float(alpha_cfg)
+    return alpha, gamma
+
+
 # ----------------------------
 # Main
 # ----------------------------
@@ -140,6 +169,11 @@ def main():
         "--split",
         required=True,
         help="Path to train/test split YAML produced by kinelearn-split.",
+    )
+    parser.add_argument(
+        "--behavior",
+        required=True,
+        help="Behavior name to train (must be present in the KineLearn config's `behaviors` list).",
     )
     parser.add_argument(
         "--features-dir",
@@ -170,6 +204,12 @@ def main():
     ):
         raise ValueError("`behaviors` in KineLearn config must be a list of strings.")
 
+    behavior = args.behavior
+    if behavior not in behaviors:
+        raise ValueError(
+            f"--behavior '{behavior}' not found in config behaviors: {behaviors}"
+        )
+
     # Optional training hyperparameters nested under config["training"]
     training_cfg: Dict = kl_config.get("training") or {}
     # Allow CLI overrides
@@ -179,12 +219,17 @@ def main():
         training_cfg["batch_size"] = args.batch_size
 
     # Provide some sane defaults (used later when we add training)
-    training_cfg.setdefault("epochs", 20)
-    training_cfg.setdefault("batch_size", 512)
+    training_cfg.setdefault("epochs", 10)
+    training_cfg.setdefault("batch_size", 8)
     training_cfg.setdefault("learning_rate", 1e-3)
-    training_cfg.setdefault("loss", "binary_crossentropy")
+    training_cfg.setdefault(
+        "loss", "focal"
+    )  # focal is the only supported loss initially
     training_cfg.setdefault("metrics", ["accuracy"])
     training_cfg.setdefault("val_fraction", 0.1)  # split from training later
+
+    # Resolve focal params (alpha can be global or per-behavior)
+    alpha, gamma = resolve_focal_params(training_cfg, behavior)
 
     print("Loaded training hyperparameters:")
     for k in [
@@ -196,6 +241,9 @@ def main():
         "val_fraction",
     ]:
         print(f"  {k}: {training_cfg[k]}")
+    if training_cfg.get("loss", "focal") == "focal":
+        print(f"  focal.alpha({behavior}): {alpha}")
+        print(f"  focal.gamma: {gamma}")
 
     split_info = load_yaml(Path(args.split))
     require_keys(split_info, ["train", "test"], "split file")
@@ -268,6 +316,11 @@ def main():
         "n_features": derived_dim,
         "n_classes": n_classes,
     }
+
+    # Include resolved behavior + focal params in manifest for traceability
+    manifest["behavior"] = behavior
+    if training_cfg.get("loss", "focal") == "focal":
+        manifest["focal"] = {"alpha": alpha, "gamma": gamma}
 
     out = Path("results")
     out.mkdir(parents=True, exist_ok=True)
