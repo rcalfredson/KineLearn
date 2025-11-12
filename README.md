@@ -29,7 +29,6 @@ Currently, KineLearn focuses on **feature extraction and normalization**, servin
 
 > 💡 If you don’t have an NVIDIA GPU, TensorFlow will fall back to CPU automatically.
 
----
 
 ### 2. Create a virtual environment
 You can use **Conda**, **venv**, or any other environment manager.
@@ -60,7 +59,6 @@ The main dependencies include:
 - Matplotlib / Seaborn for visualization
 - Pandas / PyArrow for data handling
 
----
 
 ### 4. Verify the environment
 Check that TensorFlow detects your GPU (optional):
@@ -73,7 +71,7 @@ Expected output (if GPU is available):
 ```
 [PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')]
 ```
----
+
 ### 5. Installing KineLearn itself
 
 You can install KineLearn either as a **user package** or in **editable (developer) mode**.
@@ -93,7 +91,6 @@ The `-e` (editable) flag links the package directly to your working directory,
 so any changes you make to the source code are applied immediately—  
 no need to reinstall unless you modify `pyproject.toml` or add new dependencies.
 
----
 
 ### 6. Verify command-line tools
 
@@ -106,7 +103,6 @@ kinelearn-split --help
 
 If these commands run successfully, your environment is correctly configured.
 
----
 
 💡 *Why the difference?*  
 - Use `pip install .` if you’re just **using** KineLearn (e.g., for feature extraction or model training).  
