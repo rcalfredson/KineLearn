@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pandas as pd
+from sklearn.model_selection import train_test_split
 import yaml
+
+from KineLearn.core.memmap import make_windowed_memmaps
 
 
 # ----------------------------
@@ -201,13 +204,34 @@ def main():
 
     features_dir = Path(args.features_dir)
 
-    # Assemble datasets
-    X_train, y_train = load_parquets_for_stems(train_stems, features_dir, behaviors)
     X_test, y_test = load_parquets_for_stems(test_stems, features_dir, behaviors)
 
-    # Basic sanity: avoid object dtypes sneaking in
+    if "window" in training_cfg:
+        wsize = training_cfg["window"]["size"]
+        stride = training_cfg["window"]["stride"]
+    else:
+        wsize, stride = 60, 10  # defaults
+
+    n_classes = len(behaviors)
+    seed = training_cfg.get("seed", 42)
+
+    # Split training stems into train/val sets
+    train_stems, val_stems = train_test_split(
+        train_stems, test_size=training_cfg["val_fraction"], random_state=seed
+    )
+    print(
+        f"🧩 Split {len(train_stems) + len(val_stems)} total training videos "
+        f"into {len(train_stems)} train and {len(val_stems)} validation."
+    )
+
+    X_train, y_train = load_parquets_for_stems(train_stems, features_dir, behaviors)
+    X_val, y_val = load_parquets_for_stems(val_stems, features_dir, behaviors)
+
+    # Infer derived_dim from training data
+    derived_dim = len([c for c in X_train.columns if c != "__stem__"])
+
+    # Basic sanity check
     if any(dt == "object" for dt in X_train.dtypes):
-        # Drop helper column from check
         objs = [
             c
             for c in X_train.columns
@@ -218,26 +242,39 @@ def main():
 
     summarize_dataset(X_train, y_train, X_test, y_test, behaviors)
 
-    # Placeholder return / handoff for the next stage (modeling)
-    # For now, just save a tiny manifest so downstream steps can re-load quickly.
+    train_count, mmX_tr, mmY_tr, tr_vids, tr_starts = make_windowed_memmaps(
+        X_train, y_train, wsize, stride, derived_dim, n_classes, "results/train"
+    )
+    val_count, mmX_va, mmY_va, va_vids, va_starts = make_windowed_memmaps(
+        X_val, y_val, wsize, stride, derived_dim, n_classes, "results/val"
+    )
+    test_count, mmX_te, mmY_te, te_vids, te_starts = make_windowed_memmaps(
+        X_test, y_test, wsize, stride, derived_dim, n_classes, "results/test"
+    )
+
+    # Write training manifest
     manifest = {
         "kl_config": str(Path(args.kl_config).resolve()),
         "split": str(Path(args.split).resolve()),
         "features_dir": str(features_dir.resolve()),
         "behaviors": behaviors,
         "training": training_cfg,
-        "n_train_rows": int(len(X_train)),
-        "n_test_rows": int(len(X_test)),
-        "n_features": int(len([c for c in X_train.columns if c != "__stem__"])),
+        "window": {"size": wsize, "stride": stride},
+        "counts": {
+            "train": train_count,
+            "val": val_count,
+            "test": test_count,
+        },
+        "n_features": derived_dim,
+        "n_classes": n_classes,
     }
+
     out = Path("results")
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "train_manifest.yaml", "w") as f:
+    with open(out / "train_manifest.yml", "w") as f:
         yaml.safe_dump(manifest, f, sort_keys=False)
-    print("\n📝 Wrote results/train_manifest.yaml")
 
-    # Later: return or proceed to model construction + training
-    # (e.g., build_model(training_cfg), then fit/evaluate)
+    print("\n📝 Wrote results/train_manifest.yml")
 
 
 if __name__ == "__main__":

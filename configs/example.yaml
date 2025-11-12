@@ -12,3 +12,10 @@ features:
     - [keypoint_1, keypoint_2]
   angles: # list of 3-element lists
     - [keypoint_1, keypoint_2, keypoint_3]
+
+training:
+  val_fraction: 0.1
+  seed: 100
+  window:
+    size: 60
+    stride: 10
