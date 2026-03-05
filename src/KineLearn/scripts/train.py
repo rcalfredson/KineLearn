@@ -92,6 +92,9 @@ def load_parquets_for_stems(
         Y = Y.copy()
         X["__stem__"] = stem
         Y["__stem__"] = stem
+        frame_idx = np.arange(len(X), dtype=np.int32)
+        X["__frame__"] = frame_idx
+        Y["__frame__"] = frame_idx
 
         X_parts.append(X)
         y_parts.append(Y)
@@ -288,14 +291,16 @@ def main():
     X_val, y_val = load_parquets_for_stems(val_stems, features_dir, behaviors)
 
     # Infer derived_dim from training data
-    derived_dim = len([c for c in X_train.columns if c != "__stem__"])
+    derived_dim = len(
+        [c for c in X_train.columns if c not in ("__stem__", "__frame__")]
+    )
 
     # Basic sanity check
     if any(dt == "object" for dt in X_train.dtypes):
         objs = [
             c
             for c in X_train.columns
-            if X_train[c].dtype == "object" and c != "__stem__"
+            if X_train[c].dtype == "object" and c not in ("__stem__", "__frame__")
         ]
         if objs:
             raise TypeError(f"Found non-numeric feature columns: {objs}")
@@ -303,7 +308,7 @@ def main():
     summarize_dataset(X_train, y_train, X_test, y_test, behaviors)
 
     # Feature column order as written into memmaps (must be stable + recorded)
-    feature_columns = [c for c in X_train.columns if c != "__stem__"]
+    feature_columns = [c for c in X_train.columns if c not in ("__stem__", "__frame__")]
     label_columns = list(behaviors)
     behavior_idx = label_columns.index(behavior)
 

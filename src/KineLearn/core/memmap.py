@@ -1,4 +1,3 @@
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -7,6 +6,12 @@ import numpy as np
 import pandas as pd
 
 # Path: src/KineLearn/core/memmap.py
+
+
+def _n_windows(n_frames: int, window_size: int, stride: int) -> int:
+    if n_frames < window_size:
+        return 0
+    return 1 + (n_frames - window_size) // stride
 
 
 def make_windowed_memmaps(
@@ -25,27 +30,37 @@ def make_windowed_memmaps(
 
     If debug=True, prints/saves per-stem stats and all-zero window counts.
     """
-    keep_tail = window_size - stride
-    seen = defaultdict(int)
-    remnants: Dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
     vids, starts = [], []
     out_prefix = str(out_prefix)
     out_dir = Path(out_prefix).parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pre-allocate generously; will reopen with true shape later
-    max_windows = len(X)  # conservative upper bound
+    missing = []
+    for col in ("__stem__", "__frame__"):
+        if col not in X.columns:
+            missing.append(f"X missing {col}")
+        if col not in Y.columns:
+            missing.append(f"Y missing {col}")
+    if missing:
+        raise ValueError(" / ".join(missing))
+
+    # Pre-pass: exact window count
+    total_windows = 0
+    for stem, grp_feat in X.groupby("__stem__", sort=False):
+        n_frames = len(grp_feat)
+        total_windows += _n_windows(n_frames, window_size, stride)
+
     mmX = np.memmap(
         f"{out_prefix}_features.fp32",
         mode="w+",
         dtype="float32",
-        shape=(max_windows, window_size, derived_dim),
+        shape=(total_windows, window_size, derived_dim),
     )
     mmY = np.memmap(
         f"{out_prefix}_labels.u8",
         mode="w+",
         dtype="uint8",
-        shape=(max_windows, window_size, n_classes),
+        shape=(total_windows, window_size, n_classes),
     )
     offset = 0
 
@@ -53,19 +68,31 @@ def make_windowed_memmaps(
     stem_debug_rows: list[Dict[str, Any]] = []
     zero_window_count = 0
 
-    for stem, grp_feat in X.groupby("__stem__"):
-        grp_lab = Y.loc[grp_feat.index]
-        # Append any leftover tail
-        if stem in remnants:
-            t_feat, t_lab = remnants.pop(stem)
-            grp_feat = pd.concat([t_feat, grp_feat], ignore_index=True)
-            grp_lab = pd.concat([t_lab, grp_lab], ignore_index=True)
-            seen[stem] -= t_feat.shape[0]
+    y_groups = {stem: g for stem, g in Y.groupby("__stem__", sort=False)}
+    for stem, grp_feat in X.groupby("__stem__", sort=False):
+        try:
+            grp_lab = y_groups[stem]
+        except KeyError as e:
+            raise KeyError(f"Stem '{stem}' present in X but missing in Y") from e
 
-        feat_np = grp_feat.drop(columns=["__stem__"]).to_numpy(np.float32, copy=False)
-        lab_np = grp_lab.drop(columns=["__stem__"]).to_numpy(np.uint8, copy=False)
+        # Sort both by the per-frame key and drop helper columns
+        grp_feat = grp_feat.sort_values("__frame__").reset_index(drop=True)
+        grp_lab = grp_lab.sort_values("__frame__").reset_index(drop=True)
+
+        # Sanity check: frame indices match 1:1
+        if not np.array_equal(
+            grp_feat["__frame__"].to_numpy(), grp_lab["__frame__"].to_numpy()
+        ):
+            raise ValueError(f"Frame index mismatch within stem {stem}")
+
+        feat_np = grp_feat.drop(columns=["__stem__", "__frame__"]).to_numpy(
+            np.float32, copy=False
+        )
+        lab_np = grp_lab.drop(columns=["__stem__", "__frame__"]).to_numpy(
+            np.uint8, copy=False
+        )
+
         n_frames = len(feat_np)
-        offset_local = seen[stem]
 
         if debug:
             # per-frame L2 norms (cheap) to detect obviously empty features
@@ -91,12 +118,8 @@ def make_windowed_memmaps(
             mmX[offset] = winX
             mmY[offset] = winY
             vids.append(stem)
-            starts.append(offset_local + s)
+            starts.append(int(s))
             offset += 1
-
-        seen[stem] += n_frames
-        tail_len = min(keep_tail, n_frames)
-        remnants[stem] = (grp_feat.tail(tail_len), grp_lab.tail(tail_len))
 
     # Resize to true count (truncate the files)
     mmX.flush()
@@ -107,6 +130,11 @@ def make_windowed_memmaps(
     # Close the writable memmaps before truncation
     del mmX
     del mmY
+
+    if offset != total_windows:
+        raise RuntimeError(
+            f"Window count mismatch: prepass={total_windows} wrote={offset}"
+        )
 
     feat_bytes = offset * window_size * derived_dim * np.dtype(np.float32).itemsize
     lab_bytes = offset * window_size * n_classes * np.dtype(np.uint8).itemsize
