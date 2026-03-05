@@ -13,6 +13,9 @@ from KineLearn.core.features import extract_features
 from KineLearn.core.keypoints import convert_h5_to_csv
 from KineLearn.core.path import find_unique
 
+# Path: src/KineLearn/scripts/calculate_features.py
+
+
 training_features_dict = {
     "coordinates": [],
     "velocity": [],

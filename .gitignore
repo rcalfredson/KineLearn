@@ -211,7 +211,7 @@ __marimo__/
 
 # Project
 configs/*
-!configs/example.yaml
+!configs/example_config.yaml
 features/*
 !features/.gitkeep
 results/*
@@ -221,4 +221,4 @@ scalers/*
 data_splits/*
 !data_splits/.gitkeep
 video_lists/*
-!video_lists/example.yaml
+!video_lists/example_video_list.yaml

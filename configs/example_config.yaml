@@ -1,3 +1,5 @@
+# Path: configs/example_config.yaml
+
 dlc_config: /path/to/your/dlc/config.yaml
 
 behaviors: # list of behavior labels

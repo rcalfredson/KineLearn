@@ -1,5 +1,7 @@
 import numpy as np
 
+# Path: src/KineLearn/core/geometry.py
+
 
 def compute_angle(df, p1, p2, p3):
     """

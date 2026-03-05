@@ -3,6 +3,8 @@ import pandas as pd
 
 from KineLearn.core.geometry import compute_angle, compute_distance
 
+# Path: src/KineLearn/core/features.py
+
 
 def extract_features(dlc_file, kl_config):
     """

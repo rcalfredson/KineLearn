@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+# Path: src/KineLearn/core/behavior.py
+
 
 def parse_boris_labels(behaviors, label_file, num_frames):
     """

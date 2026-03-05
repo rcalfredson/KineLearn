@@ -1,11 +1,12 @@
 from collections import defaultdict
-import os
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 
 import numpy as np
 import pandas as pd
+
+# Path: src/KineLearn/core/memmap.py
 
 
 def make_windowed_memmaps(

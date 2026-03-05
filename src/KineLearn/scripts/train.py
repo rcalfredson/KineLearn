@@ -28,6 +28,8 @@ try:
 except Exception:
     tf = K = None
 
+# Path: src/KineLearn/scripts/train.py
+
 
 # ----------------------------
 # Helpers

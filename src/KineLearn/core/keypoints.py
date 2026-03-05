@@ -1,7 +1,8 @@
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+
+# Path: src/KineLearn/core/keypoints.py
 
 
 def convert_h5_to_csv(h5_files, skip_csv=False):

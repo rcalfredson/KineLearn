@@ -17,6 +17,8 @@ import random
 import yaml
 from sklearn.model_selection import train_test_split
 
+# Path: src/KineLearn/scripts/split_dataset.py
+
 
 def build_default_outpath(video_list_path: str) -> str:
     """Return default split file path with list stem and timestamp."""
