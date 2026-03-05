@@ -15,6 +15,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import yaml
@@ -256,11 +257,20 @@ def main():
 
     X_test, y_test = load_parquets_for_stems(test_stems, features_dir, behaviors)
 
-    if "window" in training_cfg:
-        wsize = training_cfg["window"]["size"]
-        stride = training_cfg["window"]["stride"]
-    else:
-        wsize, stride = 60, 10  # defaults
+    wcfg = kl_config.get("window") or training_cfg.get("window") or {}
+    wsize = int(wcfg.get("size", 60))
+    stride = int(wcfg.get("stride", 10))
+
+    if wsize <= 0 or stride <= 0:
+        raise ValueError(
+            f"window.size and window.stride must be positive; got size={wsize}, stride={stride}"
+        )
+    if stride > wsize:
+        print(f"⚠️  stride ({stride}) > window_size ({wsize}); windows will be sparse.")
+
+    # Avoid duplicating window inside training in the manifest
+    training_cfg: dict = dict(training_cfg)
+    training_cfg.pop("window", None)
 
     n_classes = len(behaviors)
     seed = training_cfg.get("seed", 42)
@@ -292,6 +302,11 @@ def main():
 
     summarize_dataset(X_train, y_train, X_test, y_test, behaviors)
 
+    # Feature column order as written into memmaps (must be stable + recorded)
+    feature_columns = [c for c in X_train.columns if c != "__stem__"]
+    label_columns = list(behaviors)
+    behavior_idx = label_columns.index(behavior)
+
     train_count, mmX_tr, mmY_tr, tr_vids, tr_starts = make_windowed_memmaps(
         X_train, y_train, wsize, stride, derived_dim, n_classes, "results/train"
     )
@@ -302,12 +317,50 @@ def main():
         X_test, y_test, wsize, stride, derived_dim, n_classes, "results/test"
     )
 
+    # Persist index arrays (vids + starts) for traceability / later evaluation
+    out = Path("results")
+    out.mkdir(parents=True, exist_ok=True)
+
+    def _save_index(
+        name: str, vids: np.ndarray, starts: np.ndarray
+    ) -> tuple[Path, Path]:
+        vids_path = out / f"{name}_vids.npy"
+        starts_path = out / f"{name}_starts.npy"
+        np.save(vids_path, vids)
+        np.save(starts_path, starts)
+        return vids_path, starts_path
+
+    tr_vids_path, tr_starts_path = _save_index("train", tr_vids, tr_starts)
+    va_vids_path, va_starts_path = _save_index("val", va_vids, va_starts)
+    te_vids_path, te_starts_path = _save_index("test", te_vids, te_starts)
+
+    # Record memmap + index paths explicitly in the manifest
+    def _artifact_block(
+        name: str, count: int, vids_path: Path, starts_path: Path
+    ) -> dict:
+        prefix = out / name
+        X_path = (prefix.parent / f"{prefix.name}_features.fp32").resolve()
+        Y_path = (prefix.parent / f"{prefix.name}_labels.u8").resolve()
+        return {
+            "count": int(count),
+            "X_path": str(X_path),
+            "Y_path": str(Y_path),
+            "vids_path": str(vids_path.resolve()),
+            "starts_path": str(starts_path.resolve()),
+            "X_dtype": "float32",
+            "Y_dtype": "uint8",
+            "X_shape": [int(count), int(wsize), int(derived_dim)],
+            "Y_shape": [int(count), int(wsize), int(n_classes)],
+        }
+
     # Write training manifest
     manifest = {
         "kl_config": str(Path(args.kl_config).resolve()),
         "split": str(Path(args.split).resolve()),
         "features_dir": str(features_dir.resolve()),
         "behaviors": behaviors,
+        "label_columns": label_columns,
+        "feature_columns": feature_columns,
         "training": training_cfg,
         "window": {"size": wsize, "stride": stride},
         "counts": {
@@ -321,11 +374,16 @@ def main():
 
     # Include resolved behavior + focal params in manifest for traceability
     manifest["behavior"] = behavior
+    manifest["behavior_idx"] = int(behavior_idx)
     if training_cfg.get("loss", "focal") == "focal":
         manifest["focal"] = {"alpha": alpha, "gamma": gamma}
 
-    out = Path("results")
-    out.mkdir(parents=True, exist_ok=True)
+    manifest["artifacts"] = {
+        "train": _artifact_block("train", train_count, tr_vids_path, tr_starts_path),
+        "val": _artifact_block("val", val_count, va_vids_path, va_starts_path),
+        "test": _artifact_block("test", test_count, te_vids_path, te_starts_path),
+    }
+
     with open(out / "train_manifest.yml", "w") as f:
         yaml.safe_dump(manifest, f, sort_keys=False)
 
