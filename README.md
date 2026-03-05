@@ -91,6 +91,9 @@ The `-e` (editable) flag links the package directly to your working directory,
 so any changes you make to the source code are applied immediately—  
 no need to reinstall unless you modify `pyproject.toml` or add new dependencies.
 
+💡 *Why the difference?*  
+- Use `pip install .` if you’re just **using** KineLearn (e.g., for feature extraction or model training).  
+- Use `pip install -e .` if you’re **developing** KineLearn and want edits to take effect instantly.  
 
 ### 6. Verify command-line tools
 
@@ -99,14 +102,10 @@ After installation, check that the KineLearn CLI commands are recognized:
 ```bash
 kinelearn-calc --help
 kinelearn-split --help
+kinelearn-train --help
 ```
 
 If these commands run successfully, your environment is correctly configured.
-
-
-💡 *Why the difference?*  
-- Use `pip install .` if you’re just **using** KineLearn (e.g., for feature extraction or model training).  
-- Use `pip install -e .` if you’re **developing** KineLearn and want edits to take effect instantly.  
 
 ---
 ## 🧩 Using KineLearn to Generate Features
