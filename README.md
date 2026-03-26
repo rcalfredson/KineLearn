@@ -157,6 +157,9 @@ This YAML file defines:
   - `body_length_pts`: A pair of keypoints defining body length (used to normalize relative coordinates).  
   - `distances`: Pairs of keypoints for distance features.  
   - `angles`: Triplets of keypoints for angle features.
+- `training`:
+  - training hyperparameters such as `epochs`, `batch_size`, `learning_rate`, and focal-loss settings
+  - whether raw absolute keypoint coordinates are included in model input via `include_absolute_coordinates`
 
 Example:
 
@@ -366,6 +369,9 @@ Optional CLI overrides:
 - `--features-dir` to read features from a directory other than `features/`
 - `--epochs` to override `training.epochs`
 - `--batch-size` to override `training.batch_size`
+
+Training config note:
+- Set `training.include_absolute_coordinates: false` to exclude raw absolute `*_x` / `*_y` keypoint columns from model input while still retaining derived motion and geometry features.
 
 ---
 ## 📊 Evaluating Predictions

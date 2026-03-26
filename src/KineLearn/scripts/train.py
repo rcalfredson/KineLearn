@@ -168,6 +168,7 @@ def align_columns(
     *,
     df_name: str,
     helper_columns: tuple[str, ...] = (),
+    allow_extra: bool = False,
 ) -> pd.DataFrame:
     """
     Reorder a DataFrame to a known column order and fail loudly on mismatch.
@@ -177,11 +178,26 @@ def align_columns(
         raise ValueError(f"{df_name} is missing expected columns: {missing}")
 
     extra = [c for c in df.columns if c not in expected and c not in helper_columns]
-    if extra:
+    if extra and not allow_extra:
         raise ValueError(f"{df_name} has unexpected columns: {extra}")
 
     ordered = list(expected) + [c for c in helper_columns if c in df.columns]
     return df.loc[:, ordered]
+
+
+def is_absolute_coordinate_column(col: str) -> bool:
+    """
+    Return True for raw absolute x/y keypoint columns such as `thorax_x`.
+    Derived feature columns are excluded.
+    """
+    if not (col.endswith("_x") or col.endswith("_y")):
+        return False
+
+    derived_markers = ("_coord_", "_velocity_", "_acceleration_")
+    if any(marker in col for marker in derived_markers):
+        return False
+
+    return True
 
 
 # ----------------------------
@@ -258,6 +274,7 @@ def main():
     )  # focal is the only supported loss initially
     training_cfg.setdefault("metrics", ["accuracy"])
     training_cfg.setdefault("val_fraction", 0.1)  # split from training later
+    training_cfg.setdefault("include_absolute_coordinates", False)
 
     # Resolve focal params (alpha can be global or per-behavior)
     alpha, gamma = resolve_focal_params(training_cfg, behavior)
@@ -270,6 +287,7 @@ def main():
         "loss",
         "metrics",
         "val_fraction",
+        "include_absolute_coordinates",
     ]:
         print(f"  {k}: {training_cfg[k]}")
     if training_cfg.get("loss", "focal") == "focal":
@@ -320,11 +338,6 @@ def main():
     X_train, y_train = load_parquets_for_stems(train_stems, features_dir, behaviors)
     X_val, y_val = load_parquets_for_stems(val_stems, features_dir, behaviors)
 
-    # Infer derived_dim from training data
-    derived_dim = len(
-        [c for c in X_train.columns if c not in ("__stem__", "__frame__")]
-    )
-
     # Basic sanity check
     if any(dt == "object" for dt in X_train.dtypes):
         objs = [
@@ -338,7 +351,25 @@ def main():
     summarize_dataset(X_train, y_train, X_test, y_test, behaviors)
 
     # Feature column order as written into memmaps (must be stable + recorded)
-    feature_columns = [c for c in X_train.columns if c not in ("__stem__", "__frame__")]
+    all_feature_columns = [
+        c for c in X_train.columns if c not in ("__stem__", "__frame__")
+    ]
+    include_absolute_coordinates = bool(
+        training_cfg["include_absolute_coordinates"]
+    )
+    if include_absolute_coordinates:
+        feature_columns = list(all_feature_columns)
+    else:
+        feature_columns = [
+            c for c in all_feature_columns if not is_absolute_coordinate_column(c)
+        ]
+        dropped_columns = [
+            c for c in all_feature_columns if is_absolute_coordinate_column(c)
+        ]
+        print(
+            f"Excluding {len(dropped_columns)} absolute coordinate columns from training input."
+        )
+    derived_dim = len(feature_columns)
     label_columns = list(behaviors)
     behavior_idx = label_columns.index(behavior)
     helper_columns = ("__stem__", "__frame__")
@@ -348,18 +379,21 @@ def main():
         feature_columns,
         df_name="X_train",
         helper_columns=helper_columns,
+        allow_extra=True,
     )
     X_val = align_columns(
         X_val,
         feature_columns,
         df_name="X_val",
         helper_columns=helper_columns,
+        allow_extra=True,
     )
     X_test = align_columns(
         X_test,
         feature_columns,
         df_name="X_test",
         helper_columns=helper_columns,
+        allow_extra=True,
     )
     y_train = align_columns(
         y_train,
@@ -468,6 +502,10 @@ def main():
             "train": train_count,
             "val": val_count,
             "test": test_count,
+        },
+        "feature_selection": {
+            "include_absolute_coordinates": include_absolute_coordinates,
+            "n_input_features": len(feature_columns),
         },
         "positive_frames": split_positive_counts,
         "n_features": derived_dim,

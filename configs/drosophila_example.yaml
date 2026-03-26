@@ -51,6 +51,7 @@ training:
   batch_size: 8
   epochs: 10
   learning_rate: 0.001
+  include_absolute_coordinates: false
   loss: focal
   val_fraction: 0.1
   seed: 100
@@ -59,4 +60,4 @@ training:
     alpha:
       back_leg_together: 0.64
       genitalia_extension: 0.67
-    gamma: 0.2
+    gamma: 2.0
