@@ -12,6 +12,7 @@ Later steps (model definition, training loop, evaluation) will be added on top.
 """
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -200,6 +201,23 @@ def is_absolute_coordinate_column(col: str) -> bool:
     return True
 
 
+class HistoryCapture(tf.keras.callbacks.Callback if tf is not None else object):
+    """
+    Lightweight callback that retains epoch-end logs even if training is interrupted.
+    """
+
+    def __init__(self):
+        if tf is None:
+            raise ImportError("TensorFlow is required for HistoryCapture.")
+        super().__init__()
+        self.history: dict[str, list[float]] = {}
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        for key, value in logs.items():
+            self.history.setdefault(key, []).append(float(value))
+
+
 # ----------------------------
 # Main
 # ----------------------------
@@ -298,6 +316,11 @@ def main():
     require_keys(split_info, ["train", "test"], "split file")
     train_stems: List[str] = split_info["train"]
     test_stems: List[str] = split_info["test"]
+
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = Path("results") / behavior / run_timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = run_dir
 
     features_dir = Path(args.features_dir)
 
@@ -433,13 +456,31 @@ def main():
         )
 
     train_count, mmX_tr, mmY_tr, tr_vids, tr_starts = make_windowed_memmaps(
-        X_train, y_train, wsize, stride, derived_dim, n_classes, "results/train"
+        X_train,
+        y_train,
+        wsize,
+        stride,
+        derived_dim,
+        n_classes,
+        str(out / "train"),
     )
     val_count, mmX_va, mmY_va, va_vids, va_starts = make_windowed_memmaps(
-        X_val, y_val, wsize, stride, derived_dim, n_classes, "results/val"
+        X_val,
+        y_val,
+        wsize,
+        stride,
+        derived_dim,
+        n_classes,
+        str(out / "val"),
     )
     test_count, mmX_te, mmY_te, te_vids, te_starts = make_windowed_memmaps(
-        X_test, y_test, wsize, stride, derived_dim, n_classes, "results/test"
+        X_test,
+        y_test,
+        wsize,
+        stride,
+        derived_dim,
+        n_classes,
+        str(out / "test"),
     )
     for split_name, count in (
         ("train", train_count),
@@ -453,9 +494,6 @@ def main():
             )
 
     # Persist index arrays (vids + starts) for traceability / later evaluation
-    out = Path("results")
-    out.mkdir(parents=True, exist_ok=True)
-
     def _save_index(
         name: str, vids: np.ndarray, starts: np.ndarray
     ) -> tuple[Path, Path]:
@@ -493,6 +531,7 @@ def main():
         "kl_config": str(Path(args.kl_config).resolve()),
         "split": str(Path(args.split).resolve()),
         "features_dir": str(features_dir.resolve()),
+        "run_dir": str(run_dir.resolve()),
         "behaviors": behaviors,
         "label_columns": label_columns,
         "feature_columns": feature_columns,
@@ -588,10 +627,9 @@ def main():
     # ----------------------------
     # Callbacks
     # ----------------------------
-    out = Path("results")
-    out.mkdir(parents=True, exist_ok=True)
-
     ckpt_path = out / "best_model.weights.h5"
+    interrupted_ckpt_path = out / "interrupted_model.weights.h5"
+    history_capture = HistoryCapture()
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
             filepath=str(ckpt_path),
@@ -600,6 +638,7 @@ def main():
             save_weights_only=True,
         ),
         tf.keras.callbacks.CSVLogger(str(out / "train_history.csv")),
+        history_capture,
     ]
 
     if training_cfg.get("reduce_lr", False):
@@ -613,23 +652,41 @@ def main():
     # Fit
     # ----------------------------
     epochs = int(training_cfg["epochs"])
-    history = model.fit(
-        train_gen,
-        validation_data=val_gen,
-        epochs=epochs,
-        callbacks=callbacks,
-        verbose=1,
-    )
-    val_loss_history = history.history.get("val_loss", [])
+    interrupted = False
+    interruption_reason = None
+    try:
+        history = model.fit(
+            train_gen,
+            validation_data=val_gen,
+            epochs=epochs,
+            callbacks=callbacks,
+            verbose=1,
+        )
+        history_data = {
+            k: [float(x) for x in v] for k, v in (history.history or {}).items()
+        }
+    except KeyboardInterrupt:
+        interrupted = True
+        interruption_reason = "keyboard_interrupt"
+        print("\n⚠️  Training interrupted; saving partial run artifacts.")
+        model.save_weights(str(interrupted_ckpt_path))
+        history_data = history_capture.history
+
+    val_loss_history = history_data.get("val_loss", [])
     best_epoch = (
         int(np.argmin(val_loss_history)) + 1 if val_loss_history else None
     )
 
+    evaluation_ckpt_path = None
     if ckpt_path.exists():
         model.load_weights(str(ckpt_path))
+        evaluation_ckpt_path = ckpt_path
+    elif interrupted_ckpt_path.exists():
+        model.load_weights(str(interrupted_ckpt_path))
+        evaluation_ckpt_path = interrupted_ckpt_path
     else:
         print(
-            "⚠️  Best-checkpoint weights were not found; evaluating final in-memory model."
+            "⚠️  No saved checkpoint weights were found; evaluating final in-memory model."
         )
 
     # ----------------------------
@@ -642,20 +699,28 @@ def main():
         print(f"  {k}: {v}")
 
     manifest["training_run"] = {
+        "interrupted": interrupted,
+        "interruption_reason": interruption_reason,
         "checkpoint_best_model": str(ckpt_path.resolve()),
+        "checkpoint_interrupted_model": (
+            str(interrupted_ckpt_path.resolve())
+            if interrupted_ckpt_path.exists()
+            else None
+        ),
+        "evaluation_weights": (
+            str(evaluation_ckpt_path.resolve()) if evaluation_ckpt_path else None
+        ),
         "history_csv": str((out / "train_history.csv").resolve()),
-        "epochs_completed": int(len(history.history.get("loss", []))),
+        "epochs_completed": int(len(history_data.get("loss", []))),
         "best_epoch_by_val_loss": best_epoch,
-        "final_metrics": {
-            k: float(v[-1]) for k, v in history.history.items() if len(v) > 0
-        },
+        "final_metrics": {k: float(v[-1]) for k, v in history_data.items() if len(v) > 0},
         "test_metrics": test_results,
     }
 
     with open(out / "train_manifest.yml", "w") as f:
         yaml.safe_dump(manifest, f, sort_keys=False)
 
-    print("\n📝 Wrote results/train_manifest.yml")
+    print(f"\n📝 Wrote {out / 'train_manifest.yml'}")
 
 
 if __name__ == "__main__":
