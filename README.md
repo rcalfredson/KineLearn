@@ -81,7 +81,7 @@ You can install KineLearn either as a **user package** or in **editable (develop
 pip install .
 ```
 This installs KineLearn normally, adding the CLI commands  
-`kinelearn-calc`, `kinelearn-split`, and (when available) `kinelearn-train` to your PATH.
+`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, and `kinelearn-eval` to your PATH.
 
 **B. Developer installation (for code modification):**
 ```bash
@@ -103,6 +103,7 @@ After installation, check that the KineLearn CLI commands are recognized:
 kinelearn-calc --help
 kinelearn-split --help
 kinelearn-train --help
+kinelearn-eval --help
 ```
 
 If these commands run successfully, your environment is correctly configured.
@@ -345,7 +346,7 @@ At this stage, it performs:
 4. **Building generators and model** — creates memmap-backed Keras generators and a keypoints-only BiLSTM model for the selected behavior.
 5. **Training with focal loss** — optimizes a per-timestep sigmoid classifier, checkpointing on `val_loss`.
 6. **Evaluating on test data** — reloads the best checkpointed weights and reports test metrics.
-7. **Recording outputs** — saves a `results/train_manifest.yml` file summarizing dataset sizes, feature dimensions, training hyperparameters, artifact paths, and evaluation results.
+7. **Recording outputs** — saves all artifacts into a run-specific directory under `results/<behavior>/<timestamp>/`, including a `train_manifest.yml` file summarizing dataset sizes, feature dimensions, training hyperparameters, artifact paths, and evaluation results.
 
 ---
 
@@ -359,11 +360,15 @@ kinelearn-train \
 ```
 
 This will:
-- Prepare `train`, `val`, and `test` memmaps under `results/`
+- Prepare `train`, `val`, and `test` memmaps under a run directory in `results/`
 - Train a single-behavior BiLSTM using focal loss
-- Save the best model weights to `results/best_model.weights.h5`
-- Save per-epoch logs to `results/train_history.csv`
-- Write a manifest to `results/train_manifest.yml` with hyperparameters, artifact paths, and test metrics
+- Save the best model weights to `results/<behavior>/<timestamp>/best_model.weights.h5`
+- Save per-epoch logs to `results/<behavior>/<timestamp>/train_history.csv`
+- Write a manifest to `results/<behavior>/<timestamp>/train_manifest.yml` with hyperparameters, artifact paths, and test metrics
+
+Safety notes:
+- Training runs are isolated by behavior and timestamp, so repeated runs do not overwrite one another.
+- If training is interrupted with `Ctrl-C`, KineLearn saves partial run artifacts and a manifest for the interrupted run.
 
 Optional CLI overrides:
 - `--features-dir` to read features from a directory other than `features/`
@@ -375,7 +380,63 @@ Training config note:
 
 ---
 ## 📊 Evaluating Predictions
-_Coming soon_
+
+The `kinelearn-eval` command evaluates one or more trained single-behavior models from their `train_manifest.yml` files.
+
+At this stage, it performs:
+1. **Loading manifests and weights** — reads one or more training manifests and resolves the saved model weights for each behavior.
+2. **Loading windowed artifacts** — opens the chosen subset's memmaps and index arrays from the training run directory.
+3. **Reconstructing frame-level predictions** — runs inference over windows and averages overlapping window probabilities back onto frames.
+4. **Computing metrics** — reports frame-level metrics, episode-level metrics, or both, depending on the selected evaluation mode.
+5. **Saving evaluation outputs** — writes an evaluation summary, per-behavior metrics table, frame-level predictions table, and episode error table when episode-level reporting is enabled.
+
+### Example commands
+
+Single behavior:
+
+```bash
+kinelearn-eval \
+  --manifest results/genitalia_extension/20260326_131743/train_manifest.yml \
+  --threshold 0.6
+```
+
+Multiple behaviors together:
+
+```bash
+kinelearn-eval \
+  --manifest results/back_leg_together/20260326_140102/train_manifest.yml \
+  --manifest results/genitalia_extension/20260326_131743/train_manifest.yml
+```
+
+Episode-level reporting:
+
+```bash
+kinelearn-eval \
+  --manifest results/genitalia_extension/20260326_131743/train_manifest.yml \
+  --threshold 0.6 \
+  --level both
+```
+
+Optional CLI arguments:
+- `--subset train|val|test` to choose which split to evaluate (default: `test`)
+- `--threshold` to change the frame-level decision threshold (default: `0.5`)
+- `--level frame|episode|both` to switch between frame-level and episode-level reporting
+- `--episode-min-frames` to control the minimum predicted episode length (default: `16`)
+- `--episode-max-gap` to control the allowed internal gap inside a predicted episode (default: `3`)
+- `--episode-overlap-threshold` to control predicted/ground-truth episode matching (default: `0.2`)
+- `--batch-size` to override the evaluation batch size
+- `--out` to choose the evaluation output directory
+
+This will write:
+- `results/evaluations/<timestamp>/eval_summary.yml`
+- `results/evaluations/<timestamp>/per_behavior_metrics.csv`
+- `results/evaluations/<timestamp>/frame_predictions.parquet`
+- `results/evaluations/<timestamp>/episode_errors.csv` when `--level` is `episode` or `both`
+
+Current scope notes:
+- Episode-level reporting uses thresholded frame predictions to build bouts with a minimum length and a small allowed internal gap.
+- For multi-model evaluation, provide at most one manifest per behavior.
+- Manifests in the same evaluation run must share the same project/split/window settings.
 
 ---
 
