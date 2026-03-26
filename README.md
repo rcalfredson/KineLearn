@@ -147,7 +147,8 @@ video_20250704_ground_truth.tsv
 
 ### 3. Create a KineLearn configuration file
 
-Use the provided example in `configs/` as a template.  
+Use the provided examples in `configs/` as a starting point.  
+`configs/example_config.yaml` is a minimal template, while `configs/drosophila_example.yaml` is a more realistic worked example.  
 This YAML file defines:
 - `dlc_config`: Path to your DeepLabCut project configuration file.
 - `behaviors`: List of behavior names that appear in your BORIS annotations.
@@ -199,7 +200,7 @@ Use the `kinelearn-calc` command-line tool to extract and scale features.
 ```bash
 kinelearn-calc \
   -v video_lists/train_videos.yaml \
-  --kl-config configs/drosophila.yaml \
+  --kl-config configs/drosophila_example.yaml \
   --create-scalers
 ```
 
@@ -332,13 +333,16 @@ scalers/
 ---
 ## 🧠 Training a Behavior Classifier
 
-The `kinelearn-train` command prepares datasets and hyperparameters for model training.
+The `kinelearn-train` command trains a single-behavior classifier from precomputed keypoint features.
 
 At this stage, it performs:
 1. **Loading and validating data** — reads feature and label `.parquet` files for each video.
 2. **Splitting into train/val/test** — uses the split file from `kinelearn-split`, applying the validation fraction defined in your config.
 3. **Windowing the data** — converts frame-level features and labels into overlapping windows stored as efficient `.memmap` arrays.
-4. **Recording training settings** — saves a `results/train_manifest.yml` file summarizing dataset sizes, feature dimensions, and all training hyperparameters (including focal-loss α/γ values for the selected behavior).
+4. **Building generators and model** — creates memmap-backed Keras generators and a keypoints-only BiLSTM model for the selected behavior.
+5. **Training with focal loss** — optimizes a per-timestep sigmoid classifier, checkpointing on `val_loss`.
+6. **Evaluating on test data** — reloads the best checkpointed weights and reports test metrics.
+7. **Recording outputs** — saves a `results/train_manifest.yml` file summarizing dataset sizes, feature dimensions, training hyperparameters, artifact paths, and evaluation results.
 
 ---
 
@@ -346,22 +350,22 @@ At this stage, it performs:
 
 ```bash
 kinelearn-train \
-  --kl-config configs/drosophila.yaml \
-  --split data_splits/2025_jul_aug_split.yaml \
+  --kl-config configs/drosophila_example.yaml \
+  --split data_splits/2025_jul_aug_with_ground_truth_split_20260326_103723.yaml \
   --behavior genitalia_extension
 ```
 
 This will:
 - Prepare `train`, `val`, and `test` memmaps under `results/`
-- Print dataset statistics and focal-loss settings
-- Write a manifest file ready for the next step (model definition and fitting)
+- Train a single-behavior BiLSTM using focal loss
+- Save the best model weights to `results/best_model.weights.h5`
+- Save per-epoch logs to `results/train_history.csv`
+- Write a manifest to `results/train_manifest.yml` with hyperparameters, artifact paths, and test metrics
 
----
-### Coming next
-The next phase will add:
-- A **data generator** that streams windowed data for each behavior.
-- **Model definition and training loop** using TensorFlow/Keras.
-- Automatic saving of model weights and training logs for evaluation.
+Optional CLI overrides:
+- `--features-dir` to read features from a directory other than `features/`
+- `--epochs` to override `training.epochs`
+- `--batch-size` to override `training.batch_size`
 
 ---
 ## 📊 Evaluating Predictions

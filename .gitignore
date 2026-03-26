@@ -212,6 +212,7 @@ __marimo__/
 # Project
 configs/*
 !configs/example_config.yaml
+!configs/drosophila_example.yaml
 features/*
 !features/.gitkeep
 results/*

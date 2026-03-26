@@ -20,7 +20,10 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import yaml
 
+from KineLearn.core.generators import KeypointWindowGenerator
+from KineLearn.core.losses import focal_loss
 from KineLearn.core.memmap import make_windowed_memmaps
+from KineLearn.core.models import build_keypoint_bilstm
 
 # (Optional for future training step)
 try:
@@ -133,7 +136,7 @@ def summarize_dataset(
         print(f"  {b}: {test_pos.get(b, 0)}")
 
     # Show a peek of feature columns (excluding helper column)
-    feature_cols = [c for c in X_train.columns if c != "__stem__"]
+    feature_cols = [c for c in X_train.columns if c not in ("__stem__", "__frame__")]
     print(f"\nTotal feature columns: {len(feature_cols)} (showing first 10)")
     print(feature_cols[:10])
 
@@ -157,6 +160,28 @@ def resolve_focal_params(training_cfg: Dict, behavior: str) -> tuple[float, floa
     else:
         alpha = float(alpha_cfg)
     return alpha, gamma
+
+
+def align_columns(
+    df: pd.DataFrame,
+    expected: List[str],
+    *,
+    df_name: str,
+    helper_columns: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    """
+    Reorder a DataFrame to a known column order and fail loudly on mismatch.
+    """
+    missing = [c for c in expected if c not in df.columns]
+    if missing:
+        raise ValueError(f"{df_name} is missing expected columns: {missing}")
+
+    extra = [c for c in df.columns if c not in expected and c not in helper_columns]
+    if extra:
+        raise ValueError(f"{df_name} has unexpected columns: {extra}")
+
+    ordered = list(expected) + [c for c in helper_columns if c in df.columns]
+    return df.loc[:, ordered]
 
 
 # ----------------------------
@@ -282,6 +307,11 @@ def main():
     train_stems, val_stems = train_test_split(
         train_stems, test_size=training_cfg["val_fraction"], random_state=seed
     )
+    if not train_stems or not val_stems:
+        raise ValueError(
+            "Train/validation split produced an empty partition. "
+            "Adjust training.val_fraction or provide more training videos."
+        )
     print(
         f"🧩 Split {len(train_stems) + len(val_stems)} total training videos "
         f"into {len(train_stems)} train and {len(val_stems)} validation."
@@ -311,6 +341,62 @@ def main():
     feature_columns = [c for c in X_train.columns if c not in ("__stem__", "__frame__")]
     label_columns = list(behaviors)
     behavior_idx = label_columns.index(behavior)
+    helper_columns = ("__stem__", "__frame__")
+
+    X_train = align_columns(
+        X_train,
+        feature_columns,
+        df_name="X_train",
+        helper_columns=helper_columns,
+    )
+    X_val = align_columns(
+        X_val,
+        feature_columns,
+        df_name="X_val",
+        helper_columns=helper_columns,
+    )
+    X_test = align_columns(
+        X_test,
+        feature_columns,
+        df_name="X_test",
+        helper_columns=helper_columns,
+    )
+    y_train = align_columns(
+        y_train,
+        label_columns,
+        df_name="y_train",
+        helper_columns=helper_columns,
+    )
+    y_val = align_columns(
+        y_val,
+        label_columns,
+        df_name="y_val",
+        helper_columns=helper_columns,
+    )
+    y_test = align_columns(
+        y_test,
+        label_columns,
+        df_name="y_test",
+        helper_columns=helper_columns,
+    )
+
+    split_positive_counts = {
+        "train": int(y_train[behavior].sum()),
+        "val": int(y_val[behavior].sum()),
+        "test": int(y_test[behavior].sum()),
+    }
+    if split_positive_counts["train"] == 0:
+        raise ValueError(
+            f"Selected behavior '{behavior}' has zero positive frames in training data."
+        )
+    if split_positive_counts["val"] == 0:
+        print(
+            f"⚠️  Selected behavior '{behavior}' has zero positive frames in validation data."
+        )
+    if split_positive_counts["test"] == 0:
+        print(
+            f"⚠️  Selected behavior '{behavior}' has zero positive frames in test data."
+        )
 
     train_count, mmX_tr, mmY_tr, tr_vids, tr_starts = make_windowed_memmaps(
         X_train, y_train, wsize, stride, derived_dim, n_classes, "results/train"
@@ -321,6 +407,16 @@ def main():
     test_count, mmX_te, mmY_te, te_vids, te_starts = make_windowed_memmaps(
         X_test, y_test, wsize, stride, derived_dim, n_classes, "results/test"
     )
+    for split_name, count in (
+        ("train", train_count),
+        ("val", val_count),
+        ("test", test_count),
+    ):
+        if count == 0:
+            raise ValueError(
+                f"No {split_name} windows were created. "
+                "Check window.size/window.stride and per-video frame counts."
+            )
 
     # Persist index arrays (vids + starts) for traceability / later evaluation
     out = Path("results")
@@ -373,6 +469,7 @@ def main():
             "val": val_count,
             "test": test_count,
         },
+        "positive_frames": split_positive_counts,
         "n_features": derived_dim,
         "n_classes": n_classes,
     }
@@ -387,6 +484,134 @@ def main():
         "train": _artifact_block("train", train_count, tr_vids_path, tr_starts_path),
         "val": _artifact_block("val", val_count, va_vids_path, va_starts_path),
         "test": _artifact_block("test", test_count, te_vids_path, te_starts_path),
+    }
+
+    if tf is None:
+        raise ImportError(
+            "TensorFlow is required for training. "
+            "Install tensorflow (or tensorflow-cpu) in this environment."
+        )
+
+    # ----------------------------
+    # Generators (keypoints-only)
+    # ----------------------------
+    batch_size = int(training_cfg["batch_size"])
+    train_gen = KeypointWindowGenerator(
+        mmX_tr,
+        mmY_tr,
+        behavior_idx=behavior_idx,
+        batch_size=batch_size,
+        shuffle=True,
+        seed=seed,
+    )
+    val_gen = KeypointWindowGenerator(
+        mmX_va,
+        mmY_va,
+        behavior_idx=behavior_idx,
+        batch_size=batch_size,
+        shuffle=False,
+        seed=seed,
+    )
+    test_gen = KeypointWindowGenerator(
+        mmX_te,
+        mmY_te,
+        behavior_idx=behavior_idx,
+        batch_size=batch_size,
+        shuffle=False,
+        seed=seed,
+    )
+
+    # ----------------------------
+    # Model + compile
+    # ----------------------------
+    model = build_keypoint_bilstm(wsize, derived_dim)
+
+    lr = float(training_cfg["learning_rate"])
+    if training_cfg.get("loss", "focal") != "focal":
+        raise ValueError(
+            f"Unsupported loss: {training_cfg.get('loss')} (only 'focal' supported)"
+        )
+
+    loss_fn = focal_loss(alpha=alpha, gamma=gamma)
+
+    # Metrics: keep lightweight + stable
+    metrics = [
+        tf.keras.metrics.BinaryAccuracy(name="bin_acc", threshold=0.5),
+        tf.keras.metrics.Precision(name="precision", thresholds=0.5),
+        tf.keras.metrics.Recall(name="recall", thresholds=0.5),
+    ]
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr, clipnorm=1.0),
+        loss=loss_fn,
+        metrics=metrics,
+    )
+
+    # ----------------------------
+    # Callbacks
+    # ----------------------------
+    out = Path("results")
+    out.mkdir(parents=True, exist_ok=True)
+
+    ckpt_path = out / "best_model.weights.h5"
+    callbacks = [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(ckpt_path),
+            monitor="val_loss",
+            save_best_only=True,
+            save_weights_only=True,
+        ),
+        tf.keras.callbacks.CSVLogger(str(out / "train_history.csv")),
+    ]
+
+    if training_cfg.get("reduce_lr", False):
+        callbacks.append(
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6, verbose=1
+            )
+        )
+
+    # ----------------------------
+    # Fit
+    # ----------------------------
+    epochs = int(training_cfg["epochs"])
+    history = model.fit(
+        train_gen,
+        validation_data=val_gen,
+        epochs=epochs,
+        callbacks=callbacks,
+        verbose=1,
+    )
+    val_loss_history = history.history.get("val_loss", [])
+    best_epoch = (
+        int(np.argmin(val_loss_history)) + 1 if val_loss_history else None
+    )
+
+    if ckpt_path.exists():
+        model.load_weights(str(ckpt_path))
+    else:
+        print(
+            "⚠️  Best-checkpoint weights were not found; evaluating final in-memory model."
+        )
+
+    # ----------------------------
+    # Evaluate
+    # ----------------------------
+    test_metrics = model.evaluate(test_gen, verbose=1)
+    test_results = dict(zip(model.metrics_names, [float(x) for x in test_metrics]))
+    print("\n=== Test metrics ===")
+    for k, v in test_results.items():
+        print(f"  {k}: {v}")
+
+    manifest["training_run"] = {
+        "checkpoint_best_model": str(ckpt_path.resolve()),
+        "history_csv": str((out / "train_history.csv").resolve()),
+        "epochs_completed": int(len(history.history.get("loss", []))),
+        "best_epoch_by_val_loss": best_epoch,
+        "final_metrics": {
+            k: float(v[-1]) for k, v in history.history.items() if len(v) > 0
+        },
+        "test_metrics": test_results,
     }
 
     with open(out / "train_manifest.yml", "w") as f:

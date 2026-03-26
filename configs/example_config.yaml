@@ -20,5 +20,14 @@ window:
   stride: 10
 
 training:
+  batch_size: 8
+  epochs: 10
+  learning_rate: 0.001
+  loss: focal
   val_fraction: 0.1
   seed: 100
+  reduce_lr: true
+  focal:
+    alpha:
+      string: 0.7
+    gamma: 2.0
