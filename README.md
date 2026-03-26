@@ -344,7 +344,7 @@ At this stage, it performs:
 2. **Splitting into train/val/test** — uses the split file from `kinelearn-split`, applying the validation fraction defined in your config.
 3. **Windowing the data** — converts frame-level features and labels into overlapping windows stored as efficient `.memmap` arrays.
 4. **Building generators and model** — creates memmap-backed Keras generators and a keypoints-only BiLSTM model for the selected behavior.
-5. **Training with focal loss** — optimizes a per-timestep sigmoid classifier, checkpointing on `val_loss`.
+5. **Training with focal loss** — optimizes a per-timestep sigmoid classifier, checkpointing on `val_loss`, with optional early stopping.
 6. **Evaluating on test data** — reloads the best checkpointed weights and reports test metrics.
 7. **Recording outputs** — saves all artifacts into a run-specific directory under `results/<behavior>/<timestamp>/`, including a `train_manifest.yml` file summarizing dataset sizes, feature dimensions, training hyperparameters, artifact paths, and evaluation results.
 
@@ -377,6 +377,7 @@ Optional CLI overrides:
 
 Training config note:
 - Set `training.include_absolute_coordinates: false` to exclude raw absolute `*_x` / `*_y` keypoint columns from model input while still retaining derived motion and geometry features.
+- Set `training.early_stopping: true` to stop early when `val_loss` stops improving; `training.early_stopping_patience` and `training.early_stopping_min_delta` control its sensitivity.
 
 ---
 ## 📊 Evaluating Predictions

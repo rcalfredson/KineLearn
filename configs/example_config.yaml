@@ -28,6 +28,9 @@ training:
   val_fraction: 0.1
   seed: 100
   reduce_lr: true
+  early_stopping: true
+  early_stopping_patience: 3
+  early_stopping_min_delta: 0.0
   focal:
     alpha:
       string: 0.7

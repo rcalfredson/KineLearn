@@ -293,6 +293,9 @@ def main():
     training_cfg.setdefault("metrics", ["accuracy"])
     training_cfg.setdefault("val_fraction", 0.1)  # split from training later
     training_cfg.setdefault("include_absolute_coordinates", False)
+    training_cfg.setdefault("early_stopping", False)
+    training_cfg.setdefault("early_stopping_patience", 3)
+    training_cfg.setdefault("early_stopping_min_delta", 0.0)
 
     # Resolve focal params (alpha can be global or per-behavior)
     alpha, gamma = resolve_focal_params(training_cfg, behavior)
@@ -306,6 +309,9 @@ def main():
         "metrics",
         "val_fraction",
         "include_absolute_coordinates",
+        "early_stopping",
+        "early_stopping_patience",
+        "early_stopping_min_delta",
     ]:
         print(f"  {k}: {training_cfg[k]}")
     if training_cfg.get("loss", "focal") == "focal":
@@ -645,6 +651,16 @@ def main():
         callbacks.append(
             tf.keras.callbacks.ReduceLROnPlateau(
                 monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6, verbose=1
+            )
+        )
+    if training_cfg.get("early_stopping", False):
+        callbacks.append(
+            tf.keras.callbacks.EarlyStopping(
+                monitor="val_loss",
+                patience=int(training_cfg["early_stopping_patience"]),
+                min_delta=float(training_cfg["early_stopping_min_delta"]),
+                restore_best_weights=True,
+                verbose=1,
             )
         )
 
