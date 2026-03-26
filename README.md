@@ -374,10 +374,62 @@ Optional CLI overrides:
 - `--features-dir` to read features from a directory other than `features/`
 - `--epochs` to override `training.epochs`
 - `--batch-size` to override `training.batch_size`
+- `--focal-alpha` to override the focal-loss alpha for a specific training run
 
 Training config note:
 - Set `training.include_absolute_coordinates: false` to exclude raw absolute `*_x` / `*_y` keypoint columns from model input while still retaining derived motion and geometry features.
 - Set `training.early_stopping: true` to stop early when `val_loss` stops improving; `training.early_stopping_patience` and `training.early_stopping_min_delta` control its sensitivity.
+- Use `--focal-alpha` when you want to tune alpha per split without changing the project-wide default in your config file; the resolved alpha used for that run is still recorded in the run manifest.
+
+### Tuning focal alpha in practice
+
+For some behaviors, especially when an early model settles into a high-recall / low-precision regime, the most effective next step may be to tune focal-loss `alpha` on the current split rather than immediately changing the architecture.
+
+Recommended workflow:
+1. Keep the split fixed.
+2. Train the same behavior multiple times with different `--focal-alpha` values.
+3. Evaluate each run on the validation subset.
+4. Compare validation precision, recall, and F1 for that behavior.
+5. Choose the alpha that gives the best balance for your use case.
+6. Evaluate the selected run once on the test subset.
+
+Example:
+
+```bash
+kinelearn-train \
+  --kl-config configs/drosophila_example.yaml \
+  --split data_splits/2025_jul_aug_with_ground_truth_split_20260326_103723.yaml \
+  --behavior genitalia_extension \
+  --focal-alpha 0.60
+
+kinelearn-train \
+  --kl-config configs/drosophila_example.yaml \
+  --split data_splits/2025_jul_aug_with_ground_truth_split_20260326_103723.yaml \
+  --behavior genitalia_extension \
+  --focal-alpha 0.67
+
+kinelearn-train \
+  --kl-config configs/drosophila_example.yaml \
+  --split data_splits/2025_jul_aug_with_ground_truth_split_20260326_103723.yaml \
+  --behavior genitalia_extension \
+  --focal-alpha 0.75
+```
+
+Then evaluate each run on validation data:
+
+```bash
+kinelearn-eval \
+  --manifest results/genitalia_extension/<timestamp>/train_manifest.yml \
+  --subset val \
+  --level frame
+```
+
+Practical notes:
+- KineLearn stores each run in its own `results/<behavior>/<timestamp>/` directory, so alpha sweeps do not overwrite one another.
+- The resolved alpha for that run is written into `train_manifest.yml`, which makes it easy to compare runs later.
+- Use validation results to choose alpha. Do not use test-set performance for alpha selection.
+- If frame-level precision/recall tradeoffs are the main issue, start with frame-level validation metrics first; if episode quality matters more, also inspect `--level episode` or `--level both`.
+- Alpha tuning and decision-threshold tuning are different levers: `alpha` changes how the model is trained, while `kinelearn-eval --threshold` changes how predicted probabilities are binarized at evaluation time.
 
 ---
 ## 📊 Evaluating Predictions

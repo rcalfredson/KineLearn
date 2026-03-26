@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-KineLearn training (Step 1): load hyperparameters and dataset.
-Now also harmonizes training hyperparameters and resolves focal-loss alpha by behavior.
+Train a single-behavior KineLearn classifier from precomputed frame features.
 
 This script:
-- Loads KineLearn config (and optional training hyperparameters)
-- Loads a train/test split YAML (with video stems)
-- Assembles X_train, y_train, X_test, y_test from per-stem Parquet files
+- loads the KineLearn config and a saved train/test split
+- derives a validation subset from the training stems
+- loads per-video feature and label Parquet files
+- optionally excludes raw absolute x/y keypoint columns from model input
+- windows train/val/test subsets into memmap-backed arrays
+- trains a keypoints-only BiLSTM with focal loss
+- checkpoints on val_loss, with optional reduce-on-plateau and early stopping
+- evaluates the selected checkpoint on the test subset
+- writes run artifacts and a train_manifest.yml under results/<behavior>/<timestamp>/
 
-Later steps (model definition, training loop, evaluation) will be added on top.
+Training is single-behavior per run. Focal-loss alpha can be specified in the config
+per behavior or overridden at the CLI for split-specific validation tuning.
 """
 
 import argparse
@@ -258,6 +264,15 @@ def main():
         default=None,
         help="Override batch_size from config (optional).",
     )
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=None,
+        help=(
+            "Override focal loss alpha for this training run. "
+            "Useful for split-specific tuning in single-behavior training."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -282,6 +297,9 @@ def main():
         training_cfg["epochs"] = args.epochs
     if args.batch_size is not None:
         training_cfg["batch_size"] = args.batch_size
+    if args.focal_alpha is not None:
+        training_cfg.setdefault("focal", {})
+        training_cfg["focal"]["alpha"] = float(args.focal_alpha)
 
     # Provide some sane defaults (used later when we add training)
     training_cfg.setdefault("epochs", 10)
