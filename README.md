@@ -374,11 +374,13 @@ Optional CLI overrides:
 - `--features-dir` to read features from a directory other than `features/`
 - `--epochs` to override `training.epochs`
 - `--batch-size` to override `training.batch_size`
+- `--seed` to override `training.seed` for a specific run
 - `--focal-alpha` to override the focal-loss alpha for a specific training run
 
 Training config note:
 - Set `training.include_absolute_coordinates: false` to exclude raw absolute `*_x` / `*_y` keypoint columns from model input while still retaining derived motion and geometry features.
 - Set `training.early_stopping: true` to stop early when `val_loss` stops improving; `training.early_stopping_patience` and `training.early_stopping_min_delta` control its sensitivity.
+- Use `--seed` when you want to change the train/validation split for a run without editing the config file; the resolved seed used for that run is recorded in the training manifest.
 - Use `--focal-alpha` when you want to tune alpha per split without changing the project-wide default in your config file; the resolved alpha used for that run is still recorded in the run manifest.
 
 ### Tuning focal alpha in practice

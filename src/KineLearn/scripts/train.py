@@ -265,6 +265,15 @@ def main():
         help="Override batch_size from config (optional).",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Override the training seed for this run. "
+            "This affects the train/validation split and training-time shuffling."
+        ),
+    )
+    parser.add_argument(
         "--focal-alpha",
         type=float,
         default=None,
@@ -297,6 +306,8 @@ def main():
         training_cfg["epochs"] = args.epochs
     if args.batch_size is not None:
         training_cfg["batch_size"] = args.batch_size
+    if args.seed is not None:
+        training_cfg["seed"] = int(args.seed)
     if args.focal_alpha is not None:
         training_cfg.setdefault("focal", {})
         training_cfg["focal"]["alpha"] = float(args.focal_alpha)
@@ -310,6 +321,7 @@ def main():
     )  # focal is the only supported loss initially
     training_cfg.setdefault("metrics", ["accuracy"])
     training_cfg.setdefault("val_fraction", 0.1)  # split from training later
+    training_cfg.setdefault("seed", 42)
     training_cfg.setdefault("include_absolute_coordinates", False)
     training_cfg.setdefault("early_stopping", False)
     training_cfg.setdefault("early_stopping_patience", 3)
@@ -326,6 +338,7 @@ def main():
         "loss",
         "metrics",
         "val_fraction",
+        "seed",
         "include_absolute_coordinates",
         "early_stopping",
         "early_stopping_patience",
