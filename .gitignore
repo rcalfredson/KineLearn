@@ -221,5 +221,8 @@ scalers/*
 !scalers/.gitkeep
 data_splits/*
 !data_splits/.gitkeep
+!data_splits/legacy/
+!data_splits/legacy/oct2025_train_test_split.txt
+!data_splits/legacy/oct2025_train_val_split_rep00_seed597.txt
 video_lists/*
 !video_lists/example_video_list.yaml

@@ -81,7 +81,7 @@ You can install KineLearn either as a **user package** or in **editable (develop
 pip install .
 ```
 This installs KineLearn normally, adding the CLI commands  
-`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, and `kinelearn-eval` to your PATH.
+`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, and `kinelearn-split-variability` to your PATH.
 
 **B. Developer installation (for code modification):**
 ```bash
@@ -104,6 +104,7 @@ kinelearn-calc --help
 kinelearn-split --help
 kinelearn-train --help
 kinelearn-eval --help
+kinelearn-split-variability --help
 ```
 
 If these commands run successfully, your environment is correctly configured.
@@ -445,6 +446,58 @@ Practical notes:
 - Use validation results to choose alpha. Do not use test-set performance for alpha selection.
 - If frame-level precision/recall tradeoffs are the main issue, start with frame-level validation metrics first; if episode quality matters more, also inspect `--level episode` or `--level both`.
 - Alpha tuning and decision-threshold tuning are different levers: `alpha` changes how the model is trained, while `kinelearn-eval --threshold` changes how predicted probabilities are binarized at evaluation time.
+
+### Measuring split variability
+
+When a behavior appears sensitive to split choice, use `kinelearn-split-variability` to generate reproducible train/test and train/validation split experiments and optionally run them in batch.
+
+Two practical modes are supported:
+
+1. Hold the test split fixed and vary only the train/validation split.
+2. Generate multiple outer train/test splits and multiple inner train/validation splits within each outer split.
+
+Example: fixed historical test split, multiple validation seeds
+
+```bash
+kinelearn-split-variability \
+  --base-split data_splits/legacy/oct2025_train_test_split.txt \
+  --inner-seeds 0 1 2 3 4 5 6 7 8 9 \
+  --kl-config configs/drosophila.yaml \
+  --behavior genitalia_extension \
+  --features-dir features \
+  --seed 0 \
+  --focal-alpha 0.67 \
+  --execute \
+  --out-dir results/split_variability/ge_fixed_test
+```
+
+Example: multiple outer splits plus multiple validation seeds
+
+```bash
+kinelearn-split-variability \
+  --video-list video_lists/2025_jul_aug_with_ground_truth.yaml \
+  --outer-seeds 0 1 2 3 4 \
+  --inner-seeds 0 1 2 3 \
+  --test-fraction 0.2 \
+  --kl-config configs/drosophila.yaml \
+  --behavior genitalia_extension \
+  --features-dir features \
+  --seed 0 \
+  --focal-alpha 0.67 \
+  --execute \
+  --out-dir results/split_variability/ge_nested
+```
+
+This command writes:
+- `experiment_config.yml` with the sweep settings
+- `experiment_plan.csv` with one row per planned run
+- generated split files under `results/split_variability/<timestamp>/splits/`
+- `results_summary.csv` with one row per completed training run and the captured test metrics
+
+Practical notes:
+- Omit `--execute` to do a dry run and inspect the planned commands first.
+- Use fixed training hyperparameters while measuring split sensitivity; otherwise hyperparameter changes and split effects get mixed together.
+- For historical parity/reproduction work, the old October 2025 split definitions are preserved under `data_splits/legacy/`.
 
 ---
 ## 📊 Evaluating Predictions
