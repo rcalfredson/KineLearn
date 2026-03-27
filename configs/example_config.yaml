@@ -31,6 +31,7 @@ training:
   early_stopping: true
   early_stopping_patience: 3
   early_stopping_min_delta: 0.0
+  keypoint_noise_std: 0.01
   focal:
     alpha:
       string: 0.7

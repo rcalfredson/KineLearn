@@ -326,6 +326,7 @@ def main():
     training_cfg.setdefault("early_stopping", False)
     training_cfg.setdefault("early_stopping_patience", 3)
     training_cfg.setdefault("early_stopping_min_delta", 0.0)
+    training_cfg.setdefault("keypoint_noise_std", 0.0)
 
     # Resolve focal params (alpha can be global or per-behavior)
     alpha, gamma = resolve_focal_params(training_cfg, behavior)
@@ -343,6 +344,7 @@ def main():
         "early_stopping",
         "early_stopping_patience",
         "early_stopping_min_delta",
+        "keypoint_noise_std",
     ]:
         print(f"  {k}: {training_cfg[k]}")
     if training_cfg.get("loss", "focal") == "focal":
@@ -617,6 +619,7 @@ def main():
         batch_size=batch_size,
         shuffle=True,
         seed=seed,
+        noise_std=float(training_cfg["keypoint_noise_std"]),
     )
     val_gen = KeypointWindowGenerator(
         mmX_va,
@@ -625,6 +628,7 @@ def main():
         batch_size=batch_size,
         shuffle=False,
         seed=seed,
+        noise_std=0.0,
     )
     test_gen = KeypointWindowGenerator(
         mmX_te,
@@ -633,6 +637,7 @@ def main():
         batch_size=batch_size,
         shuffle=False,
         seed=seed,
+        noise_std=0.0,
     )
 
     # ----------------------------

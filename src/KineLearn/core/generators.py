@@ -33,6 +33,7 @@ class KeypointWindowGenerator(SequenceBase):
         batch_size: int,
         shuffle: bool = True,
         seed: int = 0,
+        noise_std: float = 0.0,
     ):
         if tf is None:
             raise ImportError(
@@ -46,7 +47,10 @@ class KeypointWindowGenerator(SequenceBase):
         self.batch_size = int(batch_size)
         self.shuffle = bool(shuffle)
         self.seed = int(seed)
-        self.rng = np.random.default_rng(self.seed) if self.shuffle else None
+        self.noise_std = float(noise_std)
+        self.rng = (
+            np.random.default_rng(self.seed) if (self.shuffle or self.noise_std > 0.0) else None
+        )
 
         self.n = int(mmX.shape[0])
         if int(mmY.shape[0]) != self.n:
@@ -69,6 +73,11 @@ class KeypointWindowGenerator(SequenceBase):
         Xb = np.asarray(self.mmX[idx], dtype=np.float32)  # (B,T,D)
         yb = np.asarray(self.mmY[idx, :, self.behavior_idx], dtype=np.float32)  # (B,T)
         yb = yb[..., None]  # (B,T,1)
+
+        if self.noise_std > 0.0:
+            Xb = Xb + self.rng.normal(0.0, self.noise_std, size=Xb.shape).astype(
+                np.float32
+            )
 
         return Xb, yb
 

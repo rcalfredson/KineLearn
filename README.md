@@ -161,6 +161,7 @@ This YAML file defines:
 - `training`:
   - training hyperparameters such as `epochs`, `batch_size`, `learning_rate`, and focal-loss settings
   - whether raw absolute keypoint coordinates are included in model input via `include_absolute_coordinates`
+  - optional Gaussian noise injected into training windows via `keypoint_noise_std`
 
 Example:
 
@@ -182,7 +183,14 @@ distances:
  - [thorax, abdomen_tip]
 angles:
  - [head, thorax, abdomen_tip]
+
+training:
+  batch_size: 8
+  epochs: 10
+  keypoint_noise_std: 0.0
 ```
+
+Set `training.keypoint_noise_std` to a positive value to add Gaussian noise to keypoint inputs during training only. A value of `0.01` matches the always-on noise used in the older training codepath; validation and test windows remain noise-free.
 
 ---
 ### 4. Create a video list file
