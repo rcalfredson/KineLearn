@@ -50,10 +50,95 @@ def load_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def load_split_file(path: Path) -> dict:
+    """
+    Load either:
+    - current YAML split files with keys like train/test
+    - legacy plain-text files with sections like 'Train videos:' / 'Test videos:'
+    """
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        return load_yaml(path)
+
+    with open(path, "r") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    sections: dict[str, list[str]] = {}
+    current_key = None
+    for line in lines:
+        if line.endswith(":"):
+            current_key = line[:-1].strip().lower()
+            sections[current_key] = []
+            continue
+        if current_key is None:
+            raise ValueError(f"Malformed split file {path}: found entries before a section header.")
+        sections[current_key].append(line)
+    return sections
+
+
+def split_section(d: dict, *names: str) -> list[str]:
+    """
+    Return the first matching split section from a normalized split dict.
+    """
+    lowered = {str(k).strip().lower(): v for k, v in d.items()}
+    for name in names:
+        key = name.strip().lower()
+        if key in lowered:
+            return lowered[key]
+    raise ValueError(f"Missing split section; tried {names}, available={list(lowered.keys())}")
+
+
+def ensure_disjoint(*, name_a: str, stems_a: List[str], name_b: str, stems_b: List[str]) -> None:
+    overlap = sorted(set(stems_a) & set(stems_b))
+    if overlap:
+        preview = overlap[:10]
+        suffix = " ..." if len(overlap) > 10 else ""
+        raise ValueError(
+            f"{name_a} and {name_b} overlap on {len(overlap)} stems: {preview}{suffix}"
+        )
+
+
 def require_keys(d: dict, keys: List[str], where: str) -> None:
     missing = [k for k in keys if k not in d]
     if missing:
         raise ValueError(f"Missing keys {missing} in {where}")
+
+
+def available_feature_stems(features_dir: Path) -> list[str]:
+    prefix = "frame_features_"
+    suffix = ".parquet"
+    stems = []
+    for path in sorted(features_dir.glob(f"{prefix}*{suffix}")):
+        name = path.name
+        stems.append(name[len(prefix) : -len(suffix)])
+    return stems
+
+
+def resolve_requested_stems(
+    requested: List[str], available: List[str], *, where: str
+) -> List[str]:
+    """
+    Resolve split-file identifiers against available feature stems.
+
+    Supports either:
+    - exact full stem matches
+    - legacy short ids like 20250730_190518 that uniquely match by suffix
+    """
+    available_set = set(available)
+    resolved: list[str] = []
+    for stem in requested:
+        if stem in available_set:
+            resolved.append(stem)
+            continue
+        matches = [cand for cand in available if cand.endswith(stem)]
+        if len(matches) == 1:
+            resolved.append(matches[0])
+            continue
+        if not matches:
+            raise ValueError(f"{where}: could not resolve stem '{stem}' against available feature files.")
+        raise ValueError(
+            f"{where}: stem '{stem}' matched multiple feature files: {matches}"
+        )
+    return resolved
 
 
 def load_parquets_for_stems(
@@ -192,6 +277,21 @@ def align_columns(
     return df.loc[:, ordered]
 
 
+def zero_fill_remaining_nans(
+    df: pd.DataFrame, *, df_name: str, helper_columns: tuple[str, ...] = ()
+) -> pd.DataFrame:
+    """
+    Replace any remaining NaNs with zeros, excluding helper columns from reporting.
+    """
+    value_columns = [c for c in df.columns if c not in helper_columns]
+    nan_count = int(df[value_columns].isna().sum().sum())
+    if nan_count > 0:
+        print(f"⚠️  Final zero-fill parity step on {df_name}: replacing {nan_count} NaNs.")
+        df = df.copy()
+        df[value_columns] = df[value_columns].fillna(0)
+    return df
+
+
 def is_absolute_coordinate_column(col: str) -> bool:
     """
     Return True for raw absolute x/y keypoint columns such as `thorax_x`.
@@ -239,7 +339,19 @@ def main():
     parser.add_argument(
         "--split",
         required=True,
-        help="Path to train/test split YAML produced by kinelearn-split.",
+        help=(
+            "Path to train/test split file. Supports current YAML produced by "
+            "kinelearn-split or legacy plain-text files with 'Train videos:' / 'Test videos:'."
+        ),
+    )
+    parser.add_argument(
+        "--val-split",
+        default=None,
+        help=(
+            "Optional explicit train/val split file. Supports legacy plain-text files "
+            "with 'Train videos:' / 'Val   videos:' sections. If omitted, validation is "
+            "derived from the training stems using training.val_fraction."
+        ),
     )
     parser.add_argument(
         "--behavior",
@@ -327,6 +439,7 @@ def main():
     training_cfg.setdefault("early_stopping_patience", 3)
     training_cfg.setdefault("early_stopping_min_delta", 0.0)
     training_cfg.setdefault("keypoint_noise_std", 0.0)
+    training_cfg.setdefault("final_zero_fill", False)
 
     # Resolve focal params (alpha can be global or per-behavior)
     alpha, gamma = resolve_focal_params(training_cfg, behavior)
@@ -345,23 +458,38 @@ def main():
         "early_stopping_patience",
         "early_stopping_min_delta",
         "keypoint_noise_std",
+        "final_zero_fill",
     ]:
         print(f"  {k}: {training_cfg[k]}")
     if training_cfg.get("loss", "focal") == "focal":
         print(f"  focal.alpha({behavior}): {alpha}")
         print(f"  focal.gamma: {gamma}")
 
-    split_info = load_yaml(Path(args.split))
-    require_keys(split_info, ["train", "test"], "split file")
-    train_stems: List[str] = split_info["train"]
-    test_stems: List[str] = split_info["test"]
+    features_dir = Path(args.features_dir)
+    known_stems = available_feature_stems(features_dir)
+    if not known_stems:
+        raise FileNotFoundError(
+            f"No frame_features_*.parquet files found in features directory: {features_dir}"
+        )
+
+    split_info = load_split_file(Path(args.split))
+    split_train_stems = resolve_requested_stems(
+        split_section(split_info, "train", "train videos"), known_stems, where="split.train"
+    )
+    test_stems = resolve_requested_stems(
+        split_section(split_info, "test", "test videos"), known_stems, where="split.test"
+    )
+    ensure_disjoint(
+        name_a="split.train",
+        stems_a=split_train_stems,
+        name_b="split.test",
+        stems_b=test_stems,
+    )
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path("results") / behavior / run_timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
     out = run_dir
-
-    features_dir = Path(args.features_dir)
 
     X_test, y_test = load_parquets_for_stems(test_stems, features_dir, behaviors)
 
@@ -383,22 +511,87 @@ def main():
     n_classes = len(behaviors)
     seed = training_cfg.get("seed", 42)
 
-    # Split training stems into train/val sets
-    train_stems, val_stems = train_test_split(
-        train_stems, test_size=training_cfg["val_fraction"], random_state=seed
-    )
-    if not train_stems or not val_stems:
-        raise ValueError(
-            "Train/validation split produced an empty partition. "
-            "Adjust training.val_fraction or provide more training videos."
+    if args.val_split:
+        val_split_info = load_split_file(Path(args.val_split))
+        train_stems = resolve_requested_stems(
+            split_section(val_split_info, "train", "train videos"),
+            known_stems,
+            where="val_split.train",
         )
-    print(
-        f"🧩 Split {len(train_stems) + len(val_stems)} total training videos "
-        f"into {len(train_stems)} train and {len(val_stems)} validation."
-    )
+        val_stems = resolve_requested_stems(
+            split_section(val_split_info, "val", "val videos", "val   videos"),
+            known_stems,
+            where="val_split.val",
+        )
+        ensure_disjoint(
+            name_a="val_split.train",
+            stems_a=train_stems,
+            name_b="val_split.val",
+            stems_b=val_stems,
+        )
+        ensure_disjoint(
+            name_a="val_split.train",
+            stems_a=train_stems,
+            name_b="split.test",
+            stems_b=test_stems,
+        )
+        ensure_disjoint(
+            name_a="val_split.val",
+            stems_a=val_stems,
+            name_b="split.test",
+            stems_b=test_stems,
+        )
+        explicit_train_val = sorted(set(train_stems) | set(val_stems))
+        expected_train = sorted(set(split_train_stems))
+        if explicit_train_val != expected_train:
+            missing = sorted(set(expected_train) - set(explicit_train_val))
+            extras = sorted(set(explicit_train_val) - set(expected_train))
+            raise ValueError(
+                "Explicit val split must partition the training stems from --split exactly. "
+                f"Missing={missing[:10]}{' ...' if len(missing) > 10 else ''} "
+                f"Extras={extras[:10]}{' ...' if len(extras) > 10 else ''}"
+            )
+        print(
+            f"🧩 Using explicit validation split with {len(train_stems)} train and {len(val_stems)} validation videos."
+        )
+    else:
+        # Split training stems into train/val sets
+        train_stems, val_stems = train_test_split(
+            split_train_stems, test_size=training_cfg["val_fraction"], random_state=seed
+        )
+        if not train_stems or not val_stems:
+            raise ValueError(
+                "Train/validation split produced an empty partition. "
+                "Adjust training.val_fraction or provide more training videos."
+            )
+        print(
+            f"🧩 Split {len(train_stems) + len(val_stems)} total training videos "
+            f"into {len(train_stems)} train and {len(val_stems)} validation."
+        )
 
     X_train, y_train = load_parquets_for_stems(train_stems, features_dir, behaviors)
     X_val, y_val = load_parquets_for_stems(val_stems, features_dir, behaviors)
+
+    helper_columns = ("__stem__", "__frame__")
+    if training_cfg.get("final_zero_fill", False):
+        X_train = zero_fill_remaining_nans(
+            X_train, df_name="X_train", helper_columns=helper_columns
+        )
+        X_val = zero_fill_remaining_nans(
+            X_val, df_name="X_val", helper_columns=helper_columns
+        )
+        X_test = zero_fill_remaining_nans(
+            X_test, df_name="X_test", helper_columns=helper_columns
+        )
+        y_train = zero_fill_remaining_nans(
+            y_train, df_name="y_train", helper_columns=helper_columns
+        )
+        y_val = zero_fill_remaining_nans(
+            y_val, df_name="y_val", helper_columns=helper_columns
+        )
+        y_test = zero_fill_remaining_nans(
+            y_test, df_name="y_test", helper_columns=helper_columns
+        )
 
     # Basic sanity check
     if any(dt == "object" for dt in X_train.dtypes):
@@ -434,7 +627,6 @@ def main():
     derived_dim = len(feature_columns)
     label_columns = list(behaviors)
     behavior_idx = label_columns.index(behavior)
-    helper_columns = ("__stem__", "__frame__")
 
     X_train = align_columns(
         X_train,
@@ -569,6 +761,7 @@ def main():
     manifest = {
         "kl_config": str(Path(args.kl_config).resolve()),
         "split": str(Path(args.split).resolve()),
+        "val_split": str(Path(args.val_split).resolve()) if args.val_split else None,
         "features_dir": str(features_dir.resolve()),
         "run_dir": str(run_dir.resolve()),
         "behaviors": behaviors,
@@ -588,6 +781,11 @@ def main():
         "positive_frames": split_positive_counts,
         "n_features": derived_dim,
         "n_classes": n_classes,
+        "resolved_stems": {
+            "train": list(train_stems),
+            "val": list(val_stems),
+            "test": list(test_stems),
+        },
     }
 
     # Include resolved behavior + focal params in manifest for traceability

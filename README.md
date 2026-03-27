@@ -162,6 +162,7 @@ This YAML file defines:
   - training hyperparameters such as `epochs`, `batch_size`, `learning_rate`, and focal-loss settings
   - whether raw absolute keypoint coordinates are included in model input via `include_absolute_coordinates`
   - optional Gaussian noise injected into training windows via `keypoint_noise_std`
+  - optional final zero-fill parity cleanup via `final_zero_fill`
 
 Example:
 
@@ -188,9 +189,11 @@ training:
   batch_size: 8
   epochs: 10
   keypoint_noise_std: 0.0
+  final_zero_fill: false
 ```
 
 Set `training.keypoint_noise_std` to a positive value to add Gaussian noise to keypoint inputs during training only. A value of `0.01` matches the always-on noise used in the older training codepath; validation and test windows remain noise-free.
+Set `training.final_zero_fill: true` to apply one final `fillna(0)` pass after loading the per-video feature files and before windowing, which mirrors the old validation/training pipeline's last-stage NaN cleanup.
 
 ---
 ### 4. Create a video list file
@@ -349,7 +352,7 @@ The `kinelearn-train` command trains a single-behavior classifier from precomput
 
 At this stage, it performs:
 1. **Loading and validating data** — reads feature and label `.parquet` files for each video.
-2. **Splitting into train/val/test** — uses the split file from `kinelearn-split`, applying the validation fraction defined in your config.
+2. **Splitting into train/val/test** — uses the split file from `kinelearn-split`, applying the validation fraction defined in your config unless you provide an explicit validation split.
 3. **Windowing the data** — converts frame-level features and labels into overlapping windows stored as efficient `.memmap` arrays.
 4. **Building generators and model** — creates memmap-backed Keras generators and a keypoints-only BiLSTM model for the selected behavior.
 5. **Training with focal loss** — optimizes a per-timestep sigmoid classifier, checkpointing on `val_loss`, with optional early stopping.
@@ -380,6 +383,7 @@ Safety notes:
 
 Optional CLI overrides:
 - `--features-dir` to read features from a directory other than `features/`
+- `--val-split` to provide an explicit train/validation split file instead of deriving validation videos from `training.val_fraction`
 - `--epochs` to override `training.epochs`
 - `--batch-size` to override `training.batch_size`
 - `--seed` to override `training.seed` for a specific run
@@ -389,6 +393,7 @@ Training config note:
 - Set `training.include_absolute_coordinates: false` to exclude raw absolute `*_x` / `*_y` keypoint columns from model input while still retaining derived motion and geometry features.
 - Set `training.early_stopping: true` to stop early when `val_loss` stops improving; `training.early_stopping_patience` and `training.early_stopping_min_delta` control its sensitivity.
 - Use `--seed` when you want to change the train/validation split for a run without editing the config file; the resolved seed used for that run is recorded in the training manifest.
+- Use `--val-split` when you need a fixed, explicit train/validation partition. The resolved `split`, `val_split`, and train/val/test video stems are recorded in `train_manifest.yml` for traceability.
 - Use `--focal-alpha` when you want to tune alpha per split without changing the project-wide default in your config file; the resolved alpha used for that run is still recorded in the run manifest.
 
 ### Tuning focal alpha in practice
