@@ -4,7 +4,7 @@ Pose-based behavior classification from DeepLabCut keypoints.
 KineLearn is designed to bridge **pose estimation** and **behavior classification**.  
 It builds on DeepLabCut keypoint data to extract interpretable kinematic features (e.g., angles, distances, relative coordinates) and align them with user-defined behavioral annotations.  
 
-Currently, KineLearn focuses on **feature extraction and normalization**, serving as the foundation for upcoming modules that will handle **model training**, **prediction**, and **visualization**.
+KineLearn now supports the full core workflow for pose-based behavior modeling: **feature extraction**, **dataset splitting**, **single-behavior model training**, **evaluation**, **inference on new videos**, and **basic output visualization**. More experiment-specific downstream analyses, such as stimulus-aligned summaries, are better handled by companion tools built on top of KineLearn outputs.
 
 ## Table of Contents
 - [Installation](#installation)
@@ -82,7 +82,7 @@ You can install KineLearn either as a **user package** or in **editable (develop
 pip install .
 ```
 This installs KineLearn normally, adding the CLI commands  
-`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, `kinelearn-predict`, and `kinelearn-split-variability` to your PATH.
+`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, `kinelearn-predict`, `kinelearn-plot-timeline`, and `kinelearn-split-variability` to your PATH.
 
 **B. Developer installation (for code modification):**
 ```bash
@@ -106,6 +106,7 @@ kinelearn-split --help
 kinelearn-train --help
 kinelearn-eval --help
 kinelearn-predict --help
+kinelearn-plot-timeline --help
 kinelearn-split-variability --help
 ```
 
@@ -646,4 +647,60 @@ Practical notes:
 ---
 
 ## 🎨 Visualizing Behavioral Dynamics
-_Coming soon_
+
+The first built-in visualization utility in KineLearn is `kinelearn-plot-timeline`, which generates per-video timeline plots from frame-level prediction tables. This is meant for general model-output inspection rather than experiment-specific downstream analysis.
+
+It works with:
+- `frame_predictions.parquet` written by `kinelearn-eval`
+- `frame_predictions.parquet` written by `kinelearn-predict`
+- the corresponding CSV files if you prefer to work from CSV
+
+At this stage, it performs:
+1. **Loading prediction tables** — reads a `frame_predictions.parquet`/CSV file directly, or resolves one from an inference/evaluation output directory.
+2. **Selecting videos and behaviors** — optionally filters to chosen stems or behaviors.
+3. **Plotting behavior timelines** — draws one subplot per behavior, with probability traces over frames or seconds.
+4. **Showing prediction context** — overlays a threshold line when requested, shades predicted bouts when `pred_<behavior>` columns or a threshold are available, and shades true bouts when `true_<behavior>` columns are present.
+5. **Writing one figure per video** — saves plot files under a per-video directory and records them in a plot summary YAML.
+
+### Example commands
+
+Plot inference results in frame units:
+
+```bash
+kinelearn-plot-timeline \
+  results/inference/smoke_test_ge \
+  --threshold 0.6 \
+  --out results/plots/timeline/smoke_test_ge
+```
+
+Plot a subset of stems in seconds:
+
+```bash
+kinelearn-plot-timeline \
+  results/evaluations/20260330_120000/frame_predictions.parquet \
+  --stems output_video_20250730_181758_cropped_wheel_20250730_181758 \
+          output_video_20250708_163744_cropped_wheel_20250708_163744 \
+  --fps 60 \
+  --threshold 0.6 \
+  --format both \
+  --out results/plots/timeline/example_eval
+```
+
+Optional CLI arguments:
+- `--stems` to plot only selected video stems
+- `--behaviors` to plot only selected behaviors
+- `--fps` to convert the x-axis from frames to seconds
+- `--threshold` to draw a threshold line and infer predicted bout shading when `pred_<behavior>` columns are absent
+- `--format png|pdf|both` to control image format (default: `png`)
+- `--width` to control figure width
+- `--height-per-behavior` to control figure height per subplot
+- `--out` to choose the output directory
+
+This will write:
+- `results/plots/timeline/<timestamp>/<stem>/timeline.png`
+- `results/plots/timeline/<timestamp>/<stem>/timeline.pdf` when `--format` is `pdf` or `both`
+- `results/plots/timeline/<timestamp>/plot_summary.yml`
+
+Practical notes:
+- `kinelearn-plot-timeline` is intended for general probability/bout inspection across videos.
+- More experiment-specific visualization, such as stimulus-aligned PSTHs or cohort-level optogenetic summaries, is better handled in a downstream analysis package rather than inside KineLearn itself.
