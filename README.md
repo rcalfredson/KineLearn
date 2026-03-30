@@ -15,6 +15,7 @@ KineLearn now supports the full core workflow for pose-based behavior modeling: 
 - [📊 Evaluating Predictions](#-evaluating-predictions)
 - [🔮 Running Inference on New Videos](#-running-inference-on-new-videos)
 - [🎨 Visualizing Behavioral Dynamics](#-visualizing-behavioral-dynamics)
+- [🧪 Running Tests](#-running-tests)
 
 ---
 
@@ -721,3 +722,16 @@ This will write:
 Practical notes:
 - `kinelearn-plot-timeline` is intended for general probability/bout inspection across videos.
 - More experiment-specific visualization, such as stimulus-aligned PSTHs or cohort-level optogenetic summaries, is better handled in a downstream analysis package rather than inside KineLearn itself.
+
+---
+## 🧪 Running Tests
+
+KineLearn includes a lightweight synthetic regression test suite covering split parsing, inference helper logic, per-video output writing, and timeline plotting.
+
+Run the full suite with:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+These tests are designed to stay fast and avoid dependence on large real datasets, which makes them suitable for routine local checks during development.
