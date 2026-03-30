@@ -8,6 +8,7 @@ KineLearn now supports the full core workflow for pose-based behavior modeling: 
 
 ## Table of Contents
 - [Installation](#installation)
+- [🚀 Typical Workflows](#-typical-workflows)
 - [🧩 Using KineLearn to Generate Features](#-using-kinelearn-to-generate-features)
 - [🧭 Splitting Data into Train and Test Sets](#-splitting-data-into-train-and-test-sets)
 - [🧠 Training a Behavior Classifier](#-training-a-behavior-classifier)
@@ -111,6 +112,22 @@ kinelearn-split-variability --help
 ```
 
 If these commands run successfully, your environment is correctly configured.
+
+---
+## 🚀 Typical Workflows
+
+### Train and evaluate models
+
+1. Run `kinelearn-calc` on a labeled video set to generate `frame_features_*.parquet` and `frame_labels_*.parquet`.
+2. Create a train/test split with `kinelearn-split`, or use `kinelearn-split-variability` when you want to generate repeated split experiments.
+3. Train one model per behavior with `kinelearn-train`.
+4. Evaluate saved runs with `kinelearn-eval` or `kinelearn-batch-eval-splits`.
+
+### Run inference on new videos
+
+1. Run `kinelearn-calc` on new videos using the existing scalers from your config.
+2. Apply one or more trained models with `kinelearn-predict`.
+3. Inspect outputs with `kinelearn-plot-timeline`.
 
 ---
 ## 🧩 Using KineLearn to Generate Features
@@ -250,7 +267,7 @@ scalers/
 
 ---
 
-### 🧠 Tips
+### Tips
 * Ensure all videos in a single run share the same frame rate (the script checks this automatically).
 * For DeepLabCut `.h5` files, KineLearn will convert them to `.csv` automatically.
 * Missing or incomplete feature data are mean-imputed during export.
@@ -343,7 +360,7 @@ scalers/
 
 ---
 
-### 🧠 Tips
+### Tips
 
 * The split uses only **filename stems** (not full paths), so it's flexible across systems.
 * The split file can be reused for consistent training/testing across multiple runs.
@@ -354,7 +371,7 @@ scalers/
 
 The `kinelearn-train` command trains a single-behavior classifier from precomputed keypoint features.
 
-At this stage, it performs:
+It performs:
 1. **Loading and validating data** — reads feature and label `.parquet` files for each video.
 2. **Splitting into train/val/test** — uses the split file from `kinelearn-split`, applying the validation fraction defined in your config unless you provide an explicit validation split.
 3. **Windowing the data** — converts frame-level features and labels into overlapping windows stored as efficient `.memmap` arrays.
@@ -507,7 +524,7 @@ Practical notes:
 
 The `kinelearn-eval` command evaluates one or more trained single-behavior models from their `train_manifest.yml` files.
 
-At this stage, it performs:
+It performs:
 1. **Loading manifests and weights** — reads one or more training manifests and resolves the saved model weights for each behavior.
 2. **Loading windowed artifacts** — opens the chosen subset's memmaps and index arrays from the training run directory.
 3. **Reconstructing frame-level predictions** — runs inference over windows and averages overlapping window probabilities back onto frames.
@@ -567,7 +584,7 @@ Current scope notes:
 
 The `kinelearn-predict` command applies one or more trained single-behavior models to arbitrary `frame_features_*.parquet` files. This is the standalone inference path for videos that were processed with `kinelearn-calc` but are not part of the original train/val/test splits saved inside a training manifest.
 
-At this stage, it performs:
+It performs:
 1. **Loading manifests and weights** — reads one or more `train_manifest.yml` files and resolves the saved model weights for each behavior.
 2. **Loading arbitrary feature files** — reads `frame_features_*.parquet` from a features directory, selected either by full stem list or by a video-list YAML.
 3. **Aligning feature columns** — reorders and filters the input features to match the exact feature columns recorded in each training manifest.
@@ -655,7 +672,7 @@ It works with:
 - `frame_predictions.parquet` written by `kinelearn-predict`
 - the corresponding CSV files if you prefer to work from CSV
 
-At this stage, it performs:
+It performs:
 1. **Loading prediction tables** — reads a `frame_predictions.parquet`/CSV file directly, or resolves one from an inference/evaluation output directory.
 2. **Selecting videos and behaviors** — optionally filters to chosen stems or behaviors.
 3. **Plotting behavior timelines** — draws one subplot per behavior, with probability traces over frames or seconds.
