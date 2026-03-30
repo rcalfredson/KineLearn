@@ -12,6 +12,7 @@ Currently, KineLearn focuses on **feature extraction and normalization**, servin
 - [🧭 Splitting Data into Train and Test Sets](#-splitting-data-into-train-and-test-sets)
 - [🧠 Training a Behavior Classifier](#-training-a-behavior-classifier)
 - [📊 Evaluating Predictions](#-evaluating-predictions)
+- [🔮 Running Inference on New Videos](#-running-inference-on-new-videos)
 - [🎨 Visualizing Behavioral Dynamics](#-visualizing-behavioral-dynamics)
 
 ---
@@ -81,7 +82,7 @@ You can install KineLearn either as a **user package** or in **editable (develop
 pip install .
 ```
 This installs KineLearn normally, adding the CLI commands  
-`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, and `kinelearn-split-variability` to your PATH.
+`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, `kinelearn-predict`, and `kinelearn-split-variability` to your PATH.
 
 **B. Developer installation (for code modification):**
 ```bash
@@ -104,6 +105,7 @@ kinelearn-calc --help
 kinelearn-split --help
 kinelearn-train --help
 kinelearn-eval --help
+kinelearn-predict --help
 kinelearn-split-variability --help
 ```
 
@@ -558,6 +560,69 @@ Current scope notes:
 - Episode-level reporting uses thresholded frame predictions to build bouts with a minimum length and a small allowed internal gap.
 - For multi-model evaluation, provide at most one manifest per behavior.
 - Manifests in the same evaluation run must share the same project/split/window settings.
+
+---
+## 🔮 Running Inference on New Videos
+
+The `kinelearn-predict` command applies one or more trained single-behavior models to arbitrary `frame_features_*.parquet` files. This is the standalone inference path for videos that were processed with `kinelearn-calc` but are not part of the original train/val/test splits saved inside a training manifest.
+
+At this stage, it performs:
+1. **Loading manifests and weights** — reads one or more `train_manifest.yml` files and resolves the saved model weights for each behavior.
+2. **Loading arbitrary feature files** — reads `frame_features_*.parquet` from a features directory, selected either by full stem list or by a video-list YAML.
+3. **Aligning feature columns** — reorders and filters the input features to match the exact feature columns recorded in each training manifest.
+4. **Running model inference** — windows the frame-level features, runs the trained model, and reconstructs overlapping-window probabilities back onto frames.
+5. **Saving prediction outputs** — writes frame-level probability tables, optional thresholded predictions, and optional predicted bouts when a threshold is supplied.
+
+### Example commands
+
+Single behavior:
+
+```bash
+kinelearn-predict \
+  --manifest results/genitalia_extension/20260328_142539/train_manifest.yml \
+  --features-dir features \
+  --stems output_video_20250730_181758_cropped_wheel_20250730_181758 \
+          output_video_20250708_163744_cropped_wheel_20250708_163744 \
+  --threshold 0.6 \
+  --write-csv \
+  --out results/inference/smoke_test_ge
+```
+
+Multiple behaviors together:
+
+```bash
+kinelearn-predict \
+  --manifest results/back_leg_together/<timestamp>/train_manifest.yml \
+  --manifest results/genitalia_extension/<timestamp>/train_manifest.yml \
+  --features-dir features \
+  --video-list video_lists/new_videos.yaml \
+  --threshold 0.6 \
+  --write-csv \
+  --out results/inference/new_videos
+```
+
+Optional CLI arguments:
+- `--features-dir` to read features from a directory other than `features/`
+- `--video-list` to select stems from a YAML list of video paths
+- `--stems` to pass one or more feature stems directly
+- `--threshold` to add thresholded frame predictions and predicted bouts
+- `--episode-min-frames` to control the minimum predicted bout length (default: `16`)
+- `--episode-max-gap` to control the allowed internal gap inside a predicted bout (default: `3`)
+- `--batch-size` to override the windowed inference batch size
+- `--write-csv` to export a CSV copy of the frame-level predictions in addition to Parquet
+- `--out` to choose the inference output directory
+
+This will write:
+- `results/inference/<timestamp>/frame_predictions.parquet`
+- `results/inference/<timestamp>/frame_predictions.csv` when `--write-csv` is provided
+- `results/inference/<timestamp>/predicted_bouts.csv` when `--threshold` is provided
+- `results/inference/<timestamp>/predict_summary.yml`
+
+Practical notes:
+- `kinelearn-predict` expects that `kinelearn-calc` has already been run on the target videos so that `frame_features_*.parquet` files exist.
+- Unlike `kinelearn-eval`, this command does not require the videos to belong to the train/val/test subsets stored inside the training manifest.
+- For multi-behavior inference, provide at most one manifest per behavior.
+- The feature files must contain the columns expected by the chosen manifest(s); the command will fail loudly if required feature columns are missing.
 
 ---
 
