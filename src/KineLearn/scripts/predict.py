@@ -150,6 +150,15 @@ def parse_args() -> argparse.Namespace:
         help="Also export frame-level predictions as CSV in addition to Parquet.",
     )
     parser.add_argument(
+        "--output-mode",
+        choices=["merged", "per-video", "both"],
+        default="merged",
+        help=(
+            "How to write prediction outputs: one merged table, one directory per video, "
+            "or both (default: merged)."
+        ),
+    )
+    parser.add_argument(
         "--out",
         default=None,
         help="Output directory. Defaults to results/inference/<timestamp>/",
@@ -323,6 +332,74 @@ def build_bout_table(
     return pd.DataFrame(parts)
 
 
+def write_frame_outputs(
+    frame_df: pd.DataFrame,
+    *,
+    out_dir: Path,
+    write_csv: bool,
+) -> dict[str, str | None]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = out_dir / "frame_predictions.parquet"
+    frame_df.to_parquet(parquet_path, index=False)
+    print(f"📝 Wrote {parquet_path}")
+
+    csv_path = None
+    if write_csv:
+        csv_path = out_dir / "frame_predictions.csv"
+        frame_df.to_csv(csv_path, index=False)
+        print(f"📝 Wrote {csv_path}")
+
+    return {
+        "frame_predictions_parquet": str(parquet_path.resolve()),
+        "frame_predictions_csv": str(csv_path.resolve()) if csv_path else None,
+    }
+
+
+def write_bout_outputs(
+    bout_df: pd.DataFrame,
+    *,
+    out_dir: Path,
+) -> dict[str, str | None]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bouts_csv_path = out_dir / "predicted_bouts.csv"
+    bout_df.to_csv(bouts_csv_path, index=False)
+    print(f"📝 Wrote {bouts_csv_path}")
+    return {
+        "predicted_bouts_csv": str(bouts_csv_path.resolve()),
+    }
+
+
+def write_per_video_outputs(
+    frame_df: pd.DataFrame,
+    *,
+    out_dir: Path,
+    write_csv: bool,
+    bout_df: pd.DataFrame | None = None,
+) -> dict[str, dict[str, str | None]]:
+    video_root = out_dir / "videos"
+    artifacts: dict[str, dict[str, str | None]] = {}
+    for stem, stem_frame_df in frame_df.groupby("__stem__", sort=True):
+        stem_dir = video_root / str(stem)
+        stem_artifacts = write_frame_outputs(
+            stem_frame_df.sort_values("__frame__").reset_index(drop=True),
+            out_dir=stem_dir,
+            write_csv=write_csv,
+        )
+        if bout_df is not None and not bout_df.empty:
+            stem_bout_df = bout_df[bout_df["__stem__"] == stem]
+            if not stem_bout_df.empty:
+                stem_artifacts.update(
+                    write_bout_outputs(
+                        stem_bout_df.reset_index(drop=True),
+                        out_dir=stem_dir,
+                    )
+                )
+            else:
+                stem_artifacts["predicted_bouts_csv"] = None
+        artifacts[str(stem)] = stem_artifacts
+    return artifacts
+
+
 def main() -> None:
     args = parse_args()
     if args.threshold is not None and not (0.0 < args.threshold < 1.0):
@@ -409,21 +486,33 @@ def main() -> None:
         )
 
     merged_frames = merge_behavior_frames(frame_tables)
+    merged_bouts = pd.concat(bout_tables, ignore_index=True) if bout_tables else None
 
-    frame_parquet_path = out_dir / "frame_predictions.parquet"
-    merged_frames.to_parquet(frame_parquet_path, index=False)
-    print(f"📝 Wrote {frame_parquet_path}")
+    merged_artifacts = None
+    if args.output_mode in {"merged", "both"}:
+        merged_artifacts = write_frame_outputs(
+            merged_frames,
+            out_dir=out_dir,
+            write_csv=args.write_csv,
+        )
+        if merged_bouts is not None and not merged_bouts.empty:
+            merged_artifacts.update(
+                write_bout_outputs(
+                    merged_bouts,
+                    out_dir=out_dir,
+                )
+            )
+        else:
+            merged_artifacts["predicted_bouts_csv"] = None
 
-    if args.write_csv:
-        frame_csv_path = out_dir / "frame_predictions.csv"
-        merged_frames.to_csv(frame_csv_path, index=False)
-        print(f"📝 Wrote {frame_csv_path}")
-
-    if bout_tables:
-        merged_bouts = pd.concat(bout_tables, ignore_index=True)
-        bouts_csv_path = out_dir / "predicted_bouts.csv"
-        merged_bouts.to_csv(bouts_csv_path, index=False)
-        print(f"📝 Wrote {bouts_csv_path}")
+    per_video_artifacts = None
+    if args.output_mode in {"per-video", "both"}:
+        per_video_artifacts = write_per_video_outputs(
+            merged_frames,
+            out_dir=out_dir,
+            write_csv=args.write_csv,
+            bout_df=merged_bouts,
+        )
 
     summary = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -433,6 +522,7 @@ def main() -> None:
         "behaviors": behaviors,
         "n_videos": int(len(stems)),
         "video_stems": list(stems),
+        "output_mode": args.output_mode,
         "threshold": float(args.threshold) if args.threshold is not None else None,
         "episode_settings": (
             {
@@ -443,13 +533,13 @@ def main() -> None:
             else None
         ),
         "artifacts": {
-            "frame_predictions_parquet": str(frame_parquet_path.resolve()),
-            "frame_predictions_csv": (
-                str((out_dir / "frame_predictions.csv").resolve()) if args.write_csv else None
+            "merged": merged_artifacts,
+            "per_video_root": (
+                str((out_dir / "videos").resolve())
+                if per_video_artifacts is not None
+                else None
             ),
-            "predicted_bouts_csv": (
-                str((out_dir / "predicted_bouts.csv").resolve()) if bout_tables else None
-            ),
+            "per_video": per_video_artifacts,
         },
     }
     with open(out_dir / "predict_summary.yml", "w") as f:

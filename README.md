@@ -601,6 +601,19 @@ kinelearn-predict \
   --out results/inference/new_videos
 ```
 
+Per-video outputs:
+
+```bash
+kinelearn-predict \
+  --manifest results/genitalia_extension/<timestamp>/train_manifest.yml \
+  --features-dir features \
+  --video-list video_lists/new_videos.yaml \
+  --threshold 0.6 \
+  --write-csv \
+  --output-mode per-video \
+  --out results/inference/new_videos_per_video
+```
+
 Optional CLI arguments:
 - `--features-dir` to read features from a directory other than `features/`
 - `--video-list` to select stems from a YAML list of video paths
@@ -610,6 +623,7 @@ Optional CLI arguments:
 - `--episode-max-gap` to control the allowed internal gap inside a predicted bout (default: `3`)
 - `--batch-size` to override the windowed inference batch size
 - `--write-csv` to export a CSV copy of the frame-level predictions in addition to Parquet
+- `--output-mode merged|per-video|both` to choose whether outputs are written as one merged table, one directory per video, or both (default: `merged`)
 - `--out` to choose the inference output directory
 
 This will write:
@@ -617,6 +631,11 @@ This will write:
 - `results/inference/<timestamp>/frame_predictions.csv` when `--write-csv` is provided
 - `results/inference/<timestamp>/predicted_bouts.csv` when `--threshold` is provided
 - `results/inference/<timestamp>/predict_summary.yml`
+
+When `--output-mode per-video` or `--output-mode both` is used, KineLearn also writes per-video outputs under:
+- `results/inference/<timestamp>/videos/<stem>/frame_predictions.parquet`
+- `results/inference/<timestamp>/videos/<stem>/frame_predictions.csv` when `--write-csv` is provided
+- `results/inference/<timestamp>/videos/<stem>/predicted_bouts.csv` when `--threshold` is provided
 
 Practical notes:
 - `kinelearn-predict` expects that `kinelearn-calc` has already been run on the target videos so that `frame_features_*.parquet` files exist.
