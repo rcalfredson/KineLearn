@@ -12,9 +12,11 @@ KineLearn now supports the full core workflow for pose-based behavior modeling: 
 - [🧩 Using KineLearn to Generate Features](#-using-kinelearn-to-generate-features)
 - [🧭 Splitting Data into Train and Test Sets](#-splitting-data-into-train-and-test-sets)
 - [🧠 Training a Behavior Classifier](#-training-a-behavior-classifier)
+- [📚 Batch-Evaluating Split Sweeps](#-batch-evaluating-split-sweeps)
 - [📊 Evaluating Predictions](#-evaluating-predictions)
 - [🔮 Running Inference on New Videos](#-running-inference-on-new-videos)
 - [🎨 Visualizing Behavioral Dynamics](#-visualizing-behavioral-dynamics)
+- [🗄️ Archiving Result Directories](#-archiving-result-directories)
 - [🧪 Running Tests](#-running-tests)
 
 ---
@@ -84,7 +86,7 @@ You can install KineLearn either as a **user package** or in **editable (develop
 pip install .
 ```
 This installs KineLearn normally, adding the CLI commands  
-`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, `kinelearn-predict`, `kinelearn-plot-timeline`, and `kinelearn-split-variability` to your PATH.
+`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, `kinelearn-predict`, `kinelearn-plot-timeline`, `kinelearn-split-variability`, `kinelearn-batch-eval-splits`, and `kinelearn-archive-results` to your PATH.
 
 **B. Developer installation (for code modification):**
 ```bash
@@ -110,6 +112,8 @@ kinelearn-eval --help
 kinelearn-predict --help
 kinelearn-plot-timeline --help
 kinelearn-split-variability --help
+kinelearn-batch-eval-splits --help
+kinelearn-archive-results --help
 ```
 
 If these commands run successfully, your environment is correctly configured.
@@ -521,6 +525,60 @@ Practical notes:
 - For historical parity/reproduction work, the old October 2025 split definitions are preserved under `data_splits/legacy/`.
 
 ---
+## 📚 Batch-Evaluating Split Sweeps
+
+The `kinelearn-batch-eval-splits` command runs `kinelearn-eval` across the manifests produced by a split-variability sweep and aggregates the resulting metrics into one table.
+
+It is intended for the common follow-up step after `kinelearn-split-variability --execute`, where you want to compare validation or test performance across many train/test and train/validation split choices.
+
+It performs:
+1. **Resolving the sweep source** — accepts a split-variability output directory, `results_summary.csv`, or `experiment_plan.csv`.
+2. **Finding manifests for each run** — uses `manifest_path` when present, or infers manifests from saved split metadata.
+3. **Running evaluation per run** — invokes `kinelearn-eval` with consistent subset, threshold, and reporting settings.
+4. **Aggregating metrics** — writes one combined CSV summarizing metrics across the whole sweep.
+
+Example command:
+
+```bash
+kinelearn-batch-eval-splits \
+  results/split_variability/ge_fixed_test \
+  --subset val \
+  --threshold 0.6 \
+  --level frame \
+  --out-dir results/split_variability_evals/ge_fixed_test_val
+```
+
+Another example using a specific sweep table:
+
+```bash
+kinelearn-batch-eval-splits \
+  results/split_variability/ge_nested/results_summary.csv \
+  --subset test \
+  --threshold 0.6 \
+  --level both
+```
+
+Optional CLI arguments:
+- `--subset train|val|test` to choose which subset to evaluate for each run (default: `val`)
+- `--threshold` to change the frame-level decision threshold passed through to `kinelearn-eval`
+- `--level frame|episode|both` to request frame-level metrics, episode-level metrics, or both
+- `--episode-min-frames` to control the minimum predicted episode length
+- `--episode-max-gap` to control the allowed internal gap inside a predicted episode
+- `--episode-overlap-threshold` to control predicted/ground-truth episode matching
+- `--batch-size` to override evaluation batch size
+- `--out-dir` to choose the output directory
+
+This will write:
+- `results/split_variability_evals/<timestamp>/batch_eval_config.yml`
+- `results/split_variability_evals/<timestamp>/batch_eval_summary.csv`
+- per-run evaluation outputs under `results/split_variability_evals/<timestamp>/runs/<outer_id>/inner_seed<seed>/`
+
+Practical notes:
+- If a sweep already recorded `manifest_path` values, the command uses them directly.
+- If manifests are missing from the sweep table, the command attempts to infer them by matching `split_path` and `val_split_path`.
+- Failed or unresolved runs are kept in the summary CSV with an error field instead of being silently dropped.
+
+---
 ## 📊 Evaluating Predictions
 
 The `kinelearn-eval` command evaluates one or more trained single-behavior models from their `train_manifest.yml` files.
@@ -722,6 +780,53 @@ This will write:
 Practical notes:
 - `kinelearn-plot-timeline` is intended for general probability/bout inspection across videos.
 - More experiment-specific visualization, such as stimulus-aligned PSTHs or cohort-level optogenetic summaries, is better handled in a downstream analysis package rather than inside KineLearn itself.
+
+---
+## 🗄️ Archiving Result Directories
+
+The `kinelearn-archive-results` command moves a KineLearn results subtree to long-term storage while intentionally pruning the largest cache files created during training.
+
+It is designed for cases where you want to free local disk space but keep reproducibility-relevant artifacts such as:
+- `train_manifest.yml`
+- `best_model.weights.h5`
+- `train_history.csv`
+- evaluation outputs
+- inference outputs
+- split-variability plans and summaries
+- timeline plot outputs
+- `*_vids.npy`
+- `*_starts.npy`
+
+Files omitted from the archive:
+- `*_features.fp32`
+- `*_labels.u8`
+
+These memmap files are deleted from the source during a real archive run and are not copied to the destination. The smaller `*_vids.npy` and `*_starts.npy` index arrays are preserved.
+
+Example dry run:
+
+```bash
+kinelearn-archive-results \
+  results \
+  /mnt/lab_archive/kinelearn/results \
+  --dry-run \
+  --verbose
+```
+
+Example real archive:
+
+```bash
+kinelearn-archive-results \
+  results/genitalia_extension/20260326_131743 \
+  /mnt/lab_archive/kinelearn/results/genitalia_extension/20260326_131743
+```
+
+Practical notes:
+- The command moves files rather than copying them.
+- Destination directories are created as needed.
+- Existing destination files are treated as collisions and cause the run to stop before any files are moved.
+- Existing destination directories are allowed when there are no file collisions, which makes conservative resume/merge scenarios possible.
+- Empty source directories are removed after a successful archive pass when possible.
 
 ---
 ## 🧪 Running Tests
