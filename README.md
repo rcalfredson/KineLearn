@@ -187,7 +187,7 @@ This YAML file defines:
 - `training`:
   - training hyperparameters such as `epochs`, `batch_size`, `learning_rate`, and focal-loss settings
   - whether raw absolute keypoint coordinates are included in model input via `include_absolute_coordinates`
-  - optional Gaussian noise injected into training windows via `keypoint_noise_std`
+  - optional Gaussian noise injected into training windows via `keypoint_noise_std`, either globally or per behavior
   - optional final zero-fill parity cleanup via `final_zero_fill`
 
 Example:
@@ -214,11 +214,14 @@ angles:
 training:
   batch_size: 8
   epochs: 10
-  keypoint_noise_std: 0.0
+  keypoint_noise_std:
+    grooming: 0.0
+    wing_extension: 0.01
+    abdomen_bend: 0.0
   final_zero_fill: false
 ```
 
-Set `training.keypoint_noise_std` to a positive value to add Gaussian noise to keypoint inputs during training only. A value of `0.01` matches the always-on noise used in the older training codepath; validation and test windows remain noise-free.
+Set `training.keypoint_noise_std` to either a single float or a per-behavior mapping to add Gaussian noise to keypoint inputs during training only. A value of `0.01` matches the always-on noise used in the older training codepath; validation and test windows remain noise-free.
 Set `training.final_zero_fill: true` to apply one final `fillna(0)` pass after loading the per-video feature files and before windowing, which mirrors the old validation/training pipeline's last-stage NaN cleanup.
 
 ---
@@ -415,6 +418,7 @@ Optional CLI overrides:
 - `--batch-size` to override `training.batch_size`
 - `--seed` to override `training.seed` for a specific run
 - `--focal-alpha` to override the focal-loss alpha for a specific training run
+- `--keypoint-noise-std` to override the training-time Gaussian noise std for a specific run
 - `--out-dir` to force the run into a specific output directory
 
 Training config note:
@@ -423,6 +427,7 @@ Training config note:
 - Use `--seed` when you want to change the train/validation split for a run without editing the config file; the resolved seed used for that run is recorded in the training manifest.
 - Use `--val-split` when you need a fixed, explicit train/validation partition. The resolved `split`, `val_split`, and train/val/test video stems are recorded in `train_manifest.yml` for traceability.
 - Use `--focal-alpha` when you want to tune alpha per split without changing the project-wide default in your config file; the resolved alpha used for that run is still recorded in the run manifest.
+- Use `--keypoint-noise-std` when you want to tune training-time noise per run without changing the project-wide default in your config file; the resolved noise value used for that run is still recorded in the run manifest.
 
 ### Tuning focal alpha in practice
 
@@ -494,6 +499,7 @@ kinelearn-split-variability \
   --features-dir features \
   --seed 0 \
   --focal-alpha 0.67 \
+  --keypoint-noise-std 0.01 \
   --execute \
   --out-dir results/split_variability/ge_fixed_test
 ```
@@ -511,6 +517,7 @@ kinelearn-split-variability \
   --features-dir features \
   --seed 0 \
   --focal-alpha 0.67 \
+  --keypoint-noise-std 0.01 \
   --execute \
   --out-dir results/split_variability/ge_nested
 ```

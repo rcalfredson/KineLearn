@@ -121,6 +121,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional focal alpha override passed through to kinelearn-train.",
     )
     parser.add_argument(
+        "--keypoint-noise-std",
+        type=float,
+        default=None,
+        help="Optional training-time keypoint noise std override passed through to kinelearn-train.",
+    )
+    parser.add_argument(
         "--train-command",
         default="kinelearn-train",
         help="Training executable to invoke when --execute is set.",
@@ -262,6 +268,8 @@ def build_plan(
             ]
             if args.focal_alpha is not None:
                 command.extend(["--focal-alpha", str(args.focal_alpha)])
+            if args.keypoint_noise_std is not None:
+                command.extend(["--keypoint-noise-std", str(args.keypoint_noise_std)])
 
             runs.append(
                 {
@@ -643,6 +651,11 @@ def main() -> None:
             "behavior": args.behavior,
             "features_dir": str(Path(args.features_dir).resolve()),
             "training_seed": int(args.seed),
+            "keypoint_noise_std": (
+                float(args.keypoint_noise_std)
+                if args.keypoint_noise_std is not None
+                else None
+            ),
             "val_fraction": float(val_fraction),
             "test_fraction": float(args.test_fraction),
             "source": {

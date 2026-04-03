@@ -254,6 +254,25 @@ def resolve_focal_params(training_cfg: Dict, behavior: str) -> tuple[float, floa
     return alpha, gamma
 
 
+def resolve_keypoint_noise_std(training_cfg: Dict, behavior: str) -> float:
+    """
+    Resolve training-time keypoint noise std.
+    training["keypoint_noise_std"] may be either:
+      - a single float applied to all behaviors
+      - a mapping from behavior name to float
+    Falls back to 0.0 if unspecified.
+    """
+    noise_cfg = training_cfg.get("keypoint_noise_std", 0.0)
+    if isinstance(noise_cfg, dict):
+        if behavior not in noise_cfg:
+            raise ValueError(
+                "No training.keypoint_noise_std specified for behavior "
+                f"'{behavior}'. Available: {list(noise_cfg.keys())}"
+            )
+        return float(noise_cfg[behavior])
+    return float(noise_cfg)
+
+
 def align_columns(
     df: pd.DataFrame,
     expected: List[str],
@@ -395,6 +414,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--keypoint-noise-std",
+        type=float,
+        default=None,
+        help=(
+            "Override training-time Gaussian keypoint noise std for this run. "
+            "Validation and test windows remain noise-free."
+        ),
+    )
+    parser.add_argument(
         "--out-dir",
         default=None,
         help=(
@@ -430,6 +458,8 @@ def main():
     if args.focal_alpha is not None:
         training_cfg.setdefault("focal", {})
         training_cfg["focal"]["alpha"] = float(args.focal_alpha)
+    if args.keypoint_noise_std is not None:
+        training_cfg["keypoint_noise_std"] = float(args.keypoint_noise_std)
 
     # Provide some sane defaults (used later when we add training)
     training_cfg.setdefault("epochs", 10)
@@ -450,6 +480,7 @@ def main():
 
     # Resolve focal params (alpha can be global or per-behavior)
     alpha, gamma = resolve_focal_params(training_cfg, behavior)
+    noise_std = resolve_keypoint_noise_std(training_cfg, behavior)
 
     print("Loaded training hyperparameters:")
     for k in [
@@ -471,6 +502,7 @@ def main():
     if training_cfg.get("loss", "focal") == "focal":
         print(f"  focal.alpha({behavior}): {alpha}")
         print(f"  focal.gamma: {gamma}")
+    print(f"  keypoint_noise_std({behavior}): {noise_std}")
 
     features_dir = Path(args.features_dir)
     known_stems = available_feature_stems(features_dir)
@@ -803,6 +835,7 @@ def main():
     manifest["behavior_idx"] = int(behavior_idx)
     if training_cfg.get("loss", "focal") == "focal":
         manifest["focal"] = {"alpha": alpha, "gamma": gamma}
+    manifest["keypoint_noise_std"] = noise_std
 
     manifest["artifacts"] = {
         "train": _artifact_block("train", train_count, tr_vids_path, tr_starts_path),
@@ -827,7 +860,7 @@ def main():
         batch_size=batch_size,
         shuffle=True,
         seed=seed,
-        noise_std=float(training_cfg["keypoint_noise_std"]),
+        noise_std=noise_std,
     )
     val_gen = KeypointWindowGenerator(
         mmX_va,
