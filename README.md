@@ -518,12 +518,13 @@ kinelearn-split-variability \
 This command writes:
 - `experiment_config.yml` with the sweep settings
 - `experiment_plan.csv` with one row per planned run
-- generated split files under `results/split_variability/<timestamp>/splits/`
-- per-run training outputs under `results/split_variability/<timestamp>/runs/<outer_id>/inner_seed<seed>/`
+- generated split files under `<sweep_dir>/splits/`
+- per-run training outputs under `<sweep_dir>/runs/<outer_id>/inner_seed<seed>/`
 - `results_summary.csv` with one row per completed or resumed training run and the captured test metrics
 
 Practical notes:
 - Omit `--execute` to do a dry run and inspect the planned commands first.
+- If `--out-dir` is omitted, the default sweep directory is `results/split_variability/<timestamp>/`.
 - To resume an interrupted sweep, point `--resume` at the existing sweep directory. A run is treated as complete only if its run directory contains `train_manifest.yml`; missing or partial run directories are treated as pending, and partial managed run directories are removed before rerunning.
 - Resume mode reuses the existing `experiment_plan.csv` and split files instead of regenerating them.
 - Use fixed training hyperparameters while measuring split sensitivity; otherwise hyperparameter changes and split effects get mixed together.
