@@ -6,6 +6,7 @@ Archive KineLearn result directories while pruning bulky cached memmaps.
 from __future__ import annotations
 
 import argparse
+import csv
 import errno
 import os
 from dataclasses import dataclass
@@ -14,6 +15,12 @@ import shutil
 
 
 OMIT_SUFFIXES = ("_features.fp32", "_labels.u8")
+TRAINING_ARTIFACT_NAMES = {
+    "best_model.weights.h5",
+    "interrupted_model.weights.h5",
+    "train_history.csv",
+}
+TRAINING_ARTIFACT_SUFFIXES = ("_vids.npy", "_starts.npy", *OMIT_SUFFIXES)
 
 
 @dataclass(frozen=True)
@@ -22,6 +29,8 @@ class ArchivePlan:
     destination: Path
     moved_files: list[tuple[Path, Path, int]]
     omitted_files: list[tuple[Path, int]]
+    skipped_files: list[tuple[Path, int, str]]
+    skipped_directories: list[tuple[Path, str]]
     directories: list[Path]
 
     @property
@@ -31,6 +40,10 @@ class ArchivePlan:
     @property
     def omitted_bytes(self) -> int:
         return sum(size for _, size in self.omitted_files)
+
+    @property
+    def skipped_bytes(self) -> int:
+        return sum(size for _, size, _ in self.skipped_files)
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,6 +82,120 @@ def parse_args() -> argparse.Namespace:
 
 def should_omit(path: Path) -> bool:
     return any(path.name.endswith(suffix) for suffix in OMIT_SUFFIXES)
+
+
+def looks_like_incomplete_training_run(directory: Path) -> bool:
+    if not directory.is_dir():
+        return False
+    if (directory / "train_manifest.yml").exists():
+        return False
+
+    artifact_names: list[str] = []
+    for child in directory.iterdir():
+        name = child.name
+        if child.is_file() and (
+            name in TRAINING_ARTIFACT_NAMES
+            or any(name.endswith(suffix) for suffix in TRAINING_ARTIFACT_SUFFIXES)
+        ):
+            artifact_names.append(name)
+
+    if not artifact_names:
+        return False
+
+    if any(
+        name in TRAINING_ARTIFACT_NAMES
+        or name.endswith("_vids.npy")
+        or name.endswith("_starts.npy")
+        for name in artifact_names
+    ):
+        return True
+
+    return len(artifact_names) >= 2
+
+
+def count_planned_runs(plan_path: Path) -> int:
+    with open(plan_path, newline="") as f:
+        return sum(1 for _ in csv.DictReader(f))
+
+
+def count_completed_summary_runs(summary_path: Path) -> int:
+    if not summary_path.exists():
+        return 0
+    with open(summary_path, newline="") as f:
+        rows = csv.DictReader(f)
+        return sum(1 for row in rows if row.get("manifest_path"))
+
+
+def resolve_if_within_source(source: Path, candidate: str | None) -> Path | None:
+    if not candidate:
+        return None
+    try:
+        path = Path(candidate).resolve()
+    except OSError:
+        return None
+    try:
+        path.relative_to(source)
+    except ValueError:
+        return None
+    return path
+
+
+def referenced_run_directories_for_unfinished_sweep(
+    source: Path,
+    sweep_dir: Path,
+) -> list[Path]:
+    summary_path = sweep_dir / "results_summary.csv"
+    if not summary_path.exists():
+        return []
+
+    referenced_dirs: set[Path] = set()
+    with open(summary_path, newline="") as f:
+        for row in csv.DictReader(f):
+            manifest_path = resolve_if_within_source(source, row.get("manifest_path"))
+            if manifest_path is not None:
+                referenced_dirs.add(manifest_path.parent)
+
+            run_output_dir = resolve_if_within_source(source, row.get("run_output_dir"))
+            if run_output_dir is not None and run_output_dir != sweep_dir and run_output_dir.exists():
+                referenced_dirs.add(run_output_dir)
+
+    return sorted(referenced_dirs)
+
+
+def identify_skipped_directories(source: Path) -> dict[Path, str]:
+    skipped: dict[Path, str] = {}
+
+    # Keep unfinished split-variability sweeps in place. Even if some runs finished,
+    # removing sweep metadata or managed run directories makes future resume/debugging
+    # harder, so ambiguity is resolved in favor of leaving the whole sweep subtree.
+    for sweep_dir in sorted(
+        (path.parent for path in source.rglob("experiment_plan.csv")),
+        key=lambda path: len(path.parts),
+    ):
+        planned_runs = count_planned_runs(sweep_dir / "experiment_plan.csv")
+        completed_runs = count_completed_summary_runs(sweep_dir / "results_summary.csv")
+        if planned_runs != completed_runs:
+            reason = (
+                "unfinished split-variability sweep "
+                f"({completed_runs}/{planned_runs} completed in results_summary.csv)"
+            )
+            skipped[sweep_dir] = reason
+            for run_dir in referenced_run_directories_for_unfinished_sweep(source, sweep_dir):
+                skipped[run_dir] = (
+                    "run referenced by unfinished split-variability sweep "
+                    f"{sweep_dir}"
+                )
+
+    for directory in sorted(
+        (path for path in source.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+    ):
+        if any(parent in skipped for parent in directory.parents):
+            continue
+        if looks_like_incomplete_training_run(directory):
+            skipped[directory] = "incomplete training run (missing train_manifest.yml)"
+
+    return skipped
 
 
 def format_bytes(n_bytes: int) -> str:
@@ -110,6 +237,8 @@ def build_archive_plan(source: Path, destination: Path) -> ArchivePlan:
 
     moved_files: list[tuple[Path, Path, int]] = []
     omitted_files: list[tuple[Path, int]] = []
+    skipped_files: list[tuple[Path, int, str]] = []
+    skipped_dirs = identify_skipped_directories(source)
     directories = sorted(
         (path for path in source.rglob("*") if path.is_dir()),
         key=lambda path: len(path.parts),
@@ -120,6 +249,13 @@ def build_archive_plan(source: Path, destination: Path) -> ArchivePlan:
         if not path.is_file():
             continue
         size = path.stat().st_size
+        skip_reason = next(
+            (reason for directory, reason in skipped_dirs.items() if directory in path.parents),
+            None,
+        )
+        if skip_reason is not None:
+            skipped_files.append((path, size, skip_reason))
+            continue
         rel_path = path.relative_to(source)
         if should_omit(path):
             omitted_files.append((path, size))
@@ -132,6 +268,8 @@ def build_archive_plan(source: Path, destination: Path) -> ArchivePlan:
         destination=destination,
         moved_files=moved_files,
         omitted_files=omitted_files,
+        skipped_files=skipped_files,
+        skipped_directories=sorted(skipped_dirs.items()),
         directories=directories,
     )
 
@@ -207,11 +345,14 @@ def print_plan(plan: ArchivePlan, *, verbose: bool, dry_run: bool) -> None:
     print(f"Destination: {plan.destination}")
     print(f"{action} files: {len(plan.moved_files)}")
     print(f"{omit_action} memmaps: {len(plan.omitted_files)}")
+    print(f"Skipped files: {len(plan.skipped_files)}")
+    print(f"Skipped directories: {len(plan.skipped_directories)}")
     print(f"{action} bytes: {plan.moved_bytes} ({format_bytes(plan.moved_bytes)})")
     print(
         f"{omit_action} bytes: {plan.omitted_bytes} "
         f"({format_bytes(plan.omitted_bytes)})"
     )
+    print(f"Skipped bytes: {plan.skipped_bytes} ({format_bytes(plan.skipped_bytes)})")
 
     if not verbose:
         return
@@ -220,6 +361,10 @@ def print_plan(plan: ArchivePlan, *, verbose: bool, dry_run: bool) -> None:
         print(f"MOVE {src} -> {dst} [{format_bytes(size)}]")
     for path, size in plan.omitted_files:
         print(f"OMIT {path} [{format_bytes(size)}]")
+    for path, reason in plan.skipped_directories:
+        print(f"SKIPDIR {path} [{reason}]")
+    for path, size, reason in plan.skipped_files:
+        print(f"SKIP {path} [{format_bytes(size)}] [{reason}]")
 
 
 def execute_archive(plan: ArchivePlan, *, verbose: bool) -> None:

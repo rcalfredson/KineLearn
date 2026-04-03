@@ -824,6 +824,19 @@ Files omitted from the archive:
 
 These memmap files are deleted from the source during a real archive run and are not copied to the destination. The smaller `*_vids.npy` and `*_starts.npy` index arrays are preserved.
 
+Conservative protections for incomplete work:
+- Ordinary training run directories are treated as incomplete when they contain training artifacts such as checkpoints, memmaps, `train_history.csv`, `*_vids.npy`, or `*_starts.npy` but do not contain `train_manifest.yml`.
+- Incomplete training run directories are skipped entirely. Their files are neither copied nor deleted.
+- Split-variability sweep directories are inspected by comparing the number of planned runs in `experiment_plan.csv` with the number of completed runs recorded in `results_summary.csv`.
+- If those counts do not match, the sweep is treated as unfinished and the whole sweep subtree is left in place. This is intentionally conservative so resume/debugging metadata is not partially removed.
+- When there is ambiguity, `kinelearn-archive-results` prefers leaving files in the source over archiving or deleting them.
+
+Dry-run and verbose output report:
+- files that would be moved
+- memmaps that would be omitted
+- files and directories skipped because they appear incomplete or still in progress
+- total bytes moved, omitted, and skipped
+
 Example dry run:
 
 ```bash
