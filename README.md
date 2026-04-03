@@ -16,7 +16,7 @@ KineLearn now supports the full core workflow for pose-based behavior modeling: 
 - [📊 Evaluating Predictions](#-evaluating-predictions)
 - [🔮 Running Inference on New Videos](#-running-inference-on-new-videos)
 - [🎨 Visualizing Behavioral Dynamics](#-visualizing-behavioral-dynamics)
-- [🗄️ Archiving Result Directories](#-archiving-result-directories)
+- [🗄️ Archiving Result Directories](#archiving-result-directories)
 - [🧪 Running Tests](#-running-tests)
 
 ---
@@ -803,6 +803,7 @@ Practical notes:
 - More experiment-specific visualization, such as stimulus-aligned PSTHs or cohort-level optogenetic summaries, is better handled in a downstream analysis package rather than inside KineLearn itself.
 
 ---
+<a id="archiving-result-directories"></a>
 ## 🗄️ Archiving Result Directories
 
 The `kinelearn-archive-results` command moves a KineLearn results subtree to long-term storage while intentionally pruning the largest cache files created during training.
