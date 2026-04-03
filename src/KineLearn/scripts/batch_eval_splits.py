@@ -166,7 +166,8 @@ def infer_manifest_path(run: dict[str, Any], sweep_dir: Path) -> Path | None:
     manifest_path = run.get("manifest_path")
     if manifest_path:
         path = Path(manifest_path)
-        return path if path.exists() else None
+        if path.exists():
+            return path.resolve()
 
     split_path = run.get("split_path")
     val_split_path = run.get("val_split_path")

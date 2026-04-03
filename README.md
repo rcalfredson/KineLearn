@@ -17,6 +17,7 @@ KineLearn now supports the full core workflow for pose-based behavior modeling: 
 - [🔮 Running Inference on New Videos](#-running-inference-on-new-videos)
 - [🎨 Visualizing Behavioral Dynamics](#-visualizing-behavioral-dynamics)
 - [🗄️ Archiving Result Directories](#archiving-result-directories)
+- [🧰 Restoring Archived Run Artifacts](#-restoring-archived-run-artifacts)
 - [🧪 Running Tests](#-running-tests)
 
 ---
@@ -110,6 +111,7 @@ kinelearn-split --help
 kinelearn-train --help
 kinelearn-eval --help
 kinelearn-predict --help
+kinelearn-restore-run-artifacts --help
 kinelearn-plot-timeline --help
 kinelearn-split-variability --help
 kinelearn-batch-eval-splits --help
@@ -869,6 +871,52 @@ Practical notes:
 - Existing destination files are treated as collisions and cause the run to stop before any files are moved.
 - Existing destination directories are allowed when there are no file collisions, which makes conservative resume/merge scenarios possible.
 - Empty source directories are removed after a successful archive pass when possible.
+
+---
+## 🧰 Restoring Archived Run Artifacts
+
+The `kinelearn-restore-run-artifacts` command rebuilds the cached windowed artifacts for completed runs from their saved `train_manifest.yml` files.
+
+This is useful when archived runs kept their manifests, weights, and split metadata but intentionally omitted the large memmaps during `kinelearn-archive-results`, and you later want to:
+- rerun `kinelearn-eval`
+- score archived runs during `kinelearn-select-ensemble`
+- inspect or reuse historical runs without retraining
+
+Example: restore one archived run
+
+```bash
+kinelearn-restore-run-artifacts \
+  --manifest /media/Synology4/Robert/kinelearn_experiments/genitalia_extension/20260328_142539/train_manifest.yml
+```
+
+Example: restore every run in an archived split-variability sweep
+
+```bash
+kinelearn-restore-run-artifacts \
+  --source /media/Synology4/Robert/kinelearn_experiments/split_variability/ge_nested
+```
+
+Example: remove the restored memmaps again after evaluation/selection work is finished
+
+```bash
+kinelearn-restore-run-artifacts \
+  --source /media/Synology4/Robert/kinelearn_experiments/split_variability/ge_nested \
+  --teardown
+```
+
+Optional CLI arguments:
+- `--features-dir` to override the feature directory recorded in each manifest
+- `--subset train|val|test|all` to restore only selected subsets (default: `all`)
+- `--overwrite` to rebuild artifacts even when restored files already exist next to the manifest
+- `--teardown` to remove previously restored memmaps instead of rebuilding them
+- `--remove-indexes` to also remove `*_vids.npy` and `*_starts.npy` when tearing down
+- `--report-out` to choose where `restore_summary.yml` is written
+
+Practical notes:
+- Restored `*_features.fp32`, `*_labels.u8`, `*_vids.npy`, and `*_starts.npy` files are written alongside the manifest’s current directory using the recorded filenames.
+- KineLearn now resolves stale absolute artifact and weight paths conservatively by falling back to files adjacent to the manifest when they exist, which helps relocated archived runs work again without rewriting manifests.
+- This command rebuilds cached artifacts only; it does not retrain the model or change its saved weights.
+- Teardown is conservative by default: it removes the bulky restored memmaps and keeps the smaller index arrays unless `--remove-indexes` is explicitly requested.
 
 ---
 ## 🧪 Running Tests

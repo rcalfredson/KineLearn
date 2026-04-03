@@ -15,6 +15,12 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from KineLearn.core.manifests import (
+    load_train_manifest,
+    resolve_recorded_path,
+    resolve_weights_path,
+    validate_train_manifests,
+)
 from KineLearn.core.models import build_keypoint_bilstm
 
 try:
@@ -25,109 +31,23 @@ except Exception:
 # Path: src/KineLearn/scripts/eval.py
 
 
-def load_yaml(path: Path) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
-
-
-def require_keys(d: dict, keys: list[str], where: str) -> None:
-    missing = [k for k in keys if k not in d]
-    if missing:
-        raise ValueError(f"Missing keys {missing} in {where}")
-
-
-def as_path(value: str | Path) -> Path:
-    return value if isinstance(value, Path) else Path(value)
-
-
-def load_manifest(path: Path) -> dict:
-    manifest = load_yaml(path)
-    require_keys(
-        manifest,
-        [
-            "behavior",
-            "behavior_idx",
-            "label_columns",
-            "window",
-            "artifacts",
-            "feature_selection",
-            "training_run",
-        ],
-        f"manifest {path}",
-    )
-    return manifest
-
-
-def validate_manifests(manifests: list[dict], subset: str) -> None:
-    if not manifests:
-        raise ValueError("At least one manifest is required.")
-
-    behaviors = [m["behavior"] for m in manifests]
-    dupes = sorted({b for b in behaviors if behaviors.count(b) > 1})
-    if dupes:
-        raise ValueError(f"Duplicate behaviors in evaluation set: {dupes}")
-
-    base = manifests[0]
-    shared_fields = [
-        ("kl_config", "KineLearn config"),
-        ("split", "split file"),
-        ("label_columns", "label columns"),
-    ]
-    for field, label in shared_fields:
-        base_val = base.get(field)
-        for manifest in manifests[1:]:
-            if manifest.get(field) != base_val:
-                raise ValueError(f"All manifests must share the same {label}.")
-
-    base_window = base["window"]
-    for manifest in manifests[1:]:
-        if manifest["window"] != base_window:
-            raise ValueError("All manifests must share the same window size/stride.")
-
-    if subset in {"train", "val"}:
-        base_training = base.get("training", {})
-        for manifest in manifests[1:]:
-            training = manifest.get("training", {})
-            for field in ("val_fraction", "seed"):
-                if training.get(field) != base_training.get(field):
-                    raise ValueError(
-                        f"All manifests must share training.{field} when evaluating '{subset}'."
-                    )
-
-
-def resolve_weights_path(manifest: dict, manifest_path: Path) -> Path:
-    training_run = manifest.get("training_run", {})
-    candidates = [
-        training_run.get("evaluation_weights"),
-        training_run.get("checkpoint_best_model"),
-        training_run.get("checkpoint_interrupted_model"),
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = as_path(candidate)
-        if not path.is_absolute():
-            path = (manifest_path.parent / path).resolve()
-        if path.exists():
-            return path
-    raise FileNotFoundError(
-        f"No usable weights file found for manifest {manifest_path}."
-    )
-
-
-def open_memmap(artifact: dict, key: str) -> np.memmap:
-    path = as_path(artifact[f"{key}_path"])
+def open_memmap(artifact: dict, key: str, manifest_path: Path) -> np.memmap:
+    path = resolve_recorded_path(artifact[f"{key}_path"], manifest_path)
     dtype = artifact[f"{key}_dtype"]
     shape = tuple(int(x) for x in artifact[f"{key}_shape"])
     return np.memmap(path, mode="r", dtype=dtype, shape=shape)
 
 
-def load_subset_arrays(manifest: dict, subset: str) -> tuple[np.memmap, np.memmap, np.ndarray, np.ndarray]:
+def load_subset_arrays(
+    manifest: dict,
+    manifest_path: Path,
+    subset: str,
+) -> tuple[np.memmap, np.memmap, np.ndarray, np.ndarray]:
     artifact = manifest["artifacts"][subset]
-    mmX = open_memmap(artifact, "X")
-    mmY = open_memmap(artifact, "Y")
-    vids = np.load(artifact["vids_path"], allow_pickle=True)
-    starts = np.load(artifact["starts_path"], allow_pickle=True)
+    mmX = open_memmap(artifact, "X", manifest_path)
+    mmY = open_memmap(artifact, "Y", manifest_path)
+    vids = np.load(resolve_recorded_path(artifact["vids_path"], manifest_path), allow_pickle=True)
+    starts = np.load(resolve_recorded_path(artifact["starts_path"], manifest_path), allow_pickle=True)
     if len(vids) != int(artifact["count"]) or len(starts) != int(artifact["count"]):
         raise ValueError(f"Index array length mismatch for subset '{subset}'.")
     return mmX, mmY, vids, starts
@@ -457,7 +377,7 @@ def evaluate_manifest(
     window_size = int(manifest["window"]["size"])
     weights_path = resolve_weights_path(manifest, manifest_path)
     model = build_loaded_model(manifest, weights_path)
-    mmX, mmY, vids, starts = load_subset_arrays(manifest, subset)
+    mmX, mmY, vids, starts = load_subset_arrays(manifest, manifest_path, subset)
 
     eval_batch_size = batch_size or int(manifest.get("training", {}).get("batch_size", 8))
     buffers = aggregate_predictions(
@@ -658,8 +578,8 @@ def main():
         raise ValueError("--episode-max-gap must be non-negative.")
 
     manifest_paths = [Path(p) for p in args.manifest]
-    manifests = [load_manifest(path) for path in manifest_paths]
-    validate_manifests(manifests, args.subset)
+    manifests = [load_train_manifest(path) for path in manifest_paths]
+    validate_train_manifests(manifests, args.subset)
 
     out_dir = Path(args.out) if args.out else default_out_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
