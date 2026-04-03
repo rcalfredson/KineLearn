@@ -14,6 +14,8 @@ KineLearn now supports the full core workflow for pose-based behavior modeling: 
 - [🧠 Training a Behavior Classifier](#-training-a-behavior-classifier)
 - [📚 Batch-Evaluating Split Sweeps](#-batch-evaluating-split-sweeps)
 - [📊 Evaluating Predictions](#-evaluating-predictions)
+- [🧮 Creating Ensembles](#-creating-ensembles)
+- [🎯 Selecting Ensemble Members](#-selecting-ensemble-members)
 - [🔮 Running Inference on New Videos](#-running-inference-on-new-videos)
 - [🎨 Visualizing Behavioral Dynamics](#-visualizing-behavioral-dynamics)
 - [🗄️ Archiving Result Directories](#archiving-result-directories)
@@ -87,7 +89,7 @@ You can install KineLearn either as a **user package** or in **editable (develop
 pip install .
 ```
 This installs KineLearn normally, adding the CLI commands  
-`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, `kinelearn-predict`, `kinelearn-plot-timeline`, `kinelearn-split-variability`, `kinelearn-batch-eval-splits`, and `kinelearn-archive-results` to your PATH.
+`kinelearn-calc`, `kinelearn-split`, `kinelearn-train`, `kinelearn-eval`, `kinelearn-predict`, `kinelearn-create-ensemble`, `kinelearn-select-ensemble`, `kinelearn-restore-run-artifacts`, `kinelearn-plot-timeline`, `kinelearn-split-variability`, `kinelearn-batch-eval-splits`, and `kinelearn-archive-results` to your PATH.
 
 **B. Developer installation (for code modification):**
 ```bash
@@ -111,6 +113,8 @@ kinelearn-split --help
 kinelearn-train --help
 kinelearn-eval --help
 kinelearn-predict --help
+kinelearn-create-ensemble --help
+kinelearn-select-ensemble --help
 kinelearn-restore-run-artifacts --help
 kinelearn-plot-timeline --help
 kinelearn-split-variability --help
@@ -129,6 +133,7 @@ If these commands run successfully, your environment is correctly configured.
 2. Create a train/test split with `kinelearn-split`, or use `kinelearn-split-variability` when you want to generate repeated split experiments.
 3. Train one model per behavior with `kinelearn-train`.
 4. Evaluate saved runs with `kinelearn-eval` or `kinelearn-batch-eval-splits`.
+5. Optionally choose ensemble members from validation-performing runs with `kinelearn-select-ensemble`, or group already-chosen members with `kinelearn-create-ensemble`.
 
 ### Run inference on new videos
 
@@ -668,13 +673,85 @@ Current scope notes:
 - For multi-model evaluation, provide at most one manifest per behavior.
 - Manifests in the same evaluation run must share the same project/split/window settings.
 
+## 🧮 Creating Ensembles
+
+When you already know exactly which member runs you want, use `kinelearn-create-ensemble` to write the ensemble definition directly.
+
+The `kinelearn-create-ensemble` command writes a lightweight `ensemble_manifest.yml` that groups multiple compatible single-behavior training runs into one reusable inference source.
+
+This first implementation is intentionally narrow:
+- Ensembles are behavior-specific.
+- Members must be compatible for inference: same behavior, feature columns, window settings, feature-selection signature, and inference-relevant preprocessing.
+- Aggregation is mean probability only.
+- Ensemble manifests are for inference today; `kinelearn-eval` still expects train manifests.
+
+Example command:
+
+```bash
+kinelearn-create-ensemble \
+  --manifest results/genitalia_extension/run_a/train_manifest.yml \
+  --manifest results/genitalia_extension/run_b/train_manifest.yml \
+  --manifest results/genitalia_extension/run_c/train_manifest.yml \
+  --name ge_split_variability_mean \
+  --out-dir results/ensembles/genitalia_extension/ge_split_variability_mean
+```
+
+This writes:
+- `results/ensembles/<behavior>/<name_or_timestamp>/ensemble_manifest.yml`
+
+Practical notes:
+- The ensemble manifest records the shared inference signature plus the member `train_manifest.yml` paths.
+- This works well with split-variability outputs because you can choose a subset of completed runs and make that selection explicit in one manifest.
+- If member manifests become incompatible later, KineLearn will fail loudly and ask you to recreate the ensemble manifest from the current runs.
+
+---
+## 🎯 Selecting Ensemble Members
+
+The `kinelearn-select-ensemble` command helps you choose ensemble members from compatible training runs using validation performance rather than test performance.
+
+This is the intended workflow when you have many candidate runs from `kinelearn-split-variability` and want a reproducible way to identify a stable band of good models before writing a deployable ensemble manifest.
+
+The first implementation is intentionally simple:
+- Inputs can mix one or more split-variability sweep outputs and direct `train_manifest.yml` paths.
+- All candidates must match in behavior, feature/window signature, and training recipe; split metadata may differ.
+- Candidates are scored on the validation subset only.
+- Selection keeps runs within a configurable score band of the best validation performer, then lightly prefers diversity across outer splits when that provenance exists.
+- The result is a normal `ensemble_manifest.yml`, so it stays compatible with the current ensemble inference flow.
+
+Example command:
+
+```bash
+kinelearn-select-ensemble \
+  --source results/split_variability/ge_fixed_test \
+  --source results/split_variability/ge_nested \
+  --metric frame_f1 \
+  --threshold 0.6 \
+  --min-score 0.55 \
+  --band-tolerance 0.03 \
+  --max-members 5 \
+  --name ge_validation_band \
+  --out-dir results/ensembles/genitalia_extension/ge_validation_band
+```
+
+This writes:
+- `results/ensembles/<behavior>/selection_<timestamp>/ensemble_manifest.yml`
+- `results/ensembles/<behavior>/selection_<timestamp>/candidate_scores.csv`
+- `results/ensembles/<behavior>/selection_<timestamp>/selection_summary.yml`
+
+Practical notes:
+- `--source` accepts a split-variability directory, `results_summary.csv`, or `experiment_plan.csv`.
+- `--manifest` can be used to add hand-picked direct runs into the candidate pool.
+- Use validation metrics for selection; keep test-set reporting separate.
+- The current scoring metrics are `frame_f1`, `frame_precision`, `frame_recall`, `episode_f1`, `episode_precision`, and `episode_recall`.
+- For archived runs whose memmaps were pruned during archiving, restore the run artifacts first with `kinelearn-restore-run-artifacts`.
+
 ---
 ## 🔮 Running Inference on New Videos
 
-The `kinelearn-predict` command applies one or more trained single-behavior models to arbitrary `frame_features_*.parquet` files. This is the standalone inference path for videos that were processed with `kinelearn-calc` but are not part of the original train/val/test splits saved inside a training manifest.
+The `kinelearn-predict` command applies one or more trained single-behavior models to arbitrary `frame_features_*.parquet` files. Each `--manifest` can point either to a single-model `train_manifest.yml` or to an `ensemble_manifest.yml` created with `kinelearn-create-ensemble`. This is the standalone inference path for videos that were processed with `kinelearn-calc` but are not part of the original train/val/test splits saved inside a training manifest.
 
 It performs:
-1. **Loading manifests and weights** — reads one or more `train_manifest.yml` files and resolves the saved model weights for each behavior.
+1. **Loading manifests and weights** — reads one or more train or ensemble manifests and resolves the saved model weights for each behavior source.
 2. **Loading arbitrary feature files** — reads `frame_features_*.parquet` from a features directory, selected either by full stem list or by a video-list YAML.
 3. **Aligning feature columns** — reorders and filters the input features to match the exact feature columns recorded in each training manifest.
 4. **Running model inference** — windows the frame-level features, runs the trained model, and reconstructs overlapping-window probabilities back onto frames.
@@ -693,6 +770,30 @@ kinelearn-predict \
   --threshold 0.6 \
   --write-csv \
   --out results/inference/smoke_test_ge
+```
+
+Mixed ensemble + single-model inference:
+
+```bash
+kinelearn-predict \
+  --manifest results/ensembles/genitalia_extension/ge_split_variability_mean/ensemble_manifest.yml \
+  --manifest results/back_leg_together/<timestamp>/train_manifest.yml \
+  --features-dir features \
+  --video-list video_lists/new_videos.yaml \
+  --threshold 0.6 \
+  --write-csv \
+  --out results/inference/new_videos
+```
+
+Ensemble-only inference:
+
+```bash
+kinelearn-predict \
+  --manifest results/ensembles/genitalia_extension/ge_split_variability_mean/ensemble_manifest.yml \
+  --features-dir features \
+  --video-list video_lists/new_videos.yaml \
+  --threshold 0.6 \
+  --out results/inference/ge_ensemble_new_videos
 ```
 
 Multiple behaviors together:
@@ -747,7 +848,7 @@ When `--output-mode per-video` or `--output-mode both` is used, KineLearn also w
 Practical notes:
 - `kinelearn-predict` expects that `kinelearn-calc` has already been run on the target videos so that `frame_features_*.parquet` files exist.
 - Unlike `kinelearn-eval`, this command does not require the videos to belong to the train/val/test subsets stored inside the training manifest.
-- For multi-behavior inference, provide at most one manifest per behavior.
+- For multi-behavior inference, provide at most one manifest per behavior, whether that source is a single train manifest or an ensemble manifest.
 - The feature files must contain the columns expected by the chosen manifest(s); the command will fail loudly if required feature columns are missing.
 
 ---

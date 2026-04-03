@@ -17,6 +17,20 @@ TRAIN_MANIFEST_REQUIRED_KEYS = [
     "training_run",
 ]
 
+ENSEMBLE_MANIFEST_REQUIRED_KEYS = [
+    "manifest_type",
+    "behavior",
+    "behavior_idx",
+    "label_columns",
+    "feature_columns",
+    "window",
+    "feature_selection",
+    "training",
+    "aggregation",
+    "members",
+]
+
+
 def load_yaml(path: Path) -> dict[str, Any]:
     with open(path, "r") as f:
         payload = yaml.safe_load(f)
@@ -122,4 +136,196 @@ def resolve_weights_path(manifest: dict[str, Any], manifest_path: Path) -> Path:
         path = resolve_recorded_path(candidate, manifest_path)
         if path.exists():
             return path
-    raise FileNotFoundError(f"No usable weights file found for manifest {manifest_path}.")
+    raise FileNotFoundError(
+        f"No usable weights file found for manifest {manifest_path}."
+    )
+
+
+def load_ensemble_manifest(path: Path) -> dict[str, Any]:
+    manifest = load_yaml(path)
+    if manifest.get("manifest_type") != "ensemble":
+        raise ValueError(f"{path} is not an ensemble manifest.")
+    require_keys(manifest, ENSEMBLE_MANIFEST_REQUIRED_KEYS, f"ensemble manifest {path}")
+
+    if manifest["aggregation"].get("method") != "mean_probability":
+        raise ValueError(
+            f"Unsupported ensemble aggregation method: {manifest['aggregation'].get('method')}"
+        )
+    members = manifest.get("members") or []
+    if not isinstance(members, list) or len(members) < 2:
+        raise ValueError(f"Ensemble manifest {path} must list at least two members.")
+    return manifest
+
+
+def inference_signature(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "behavior": manifest["behavior"],
+        "behavior_idx": int(manifest["behavior_idx"]),
+        "label_columns": list(manifest["label_columns"]),
+        "feature_columns": list(manifest["feature_columns"]),
+        "window": dict(manifest["window"]),
+        "feature_selection": dict(manifest["feature_selection"]),
+        "training": {
+            "final_zero_fill": bool(
+                (manifest.get("training") or {}).get("final_zero_fill", False)
+            )
+        },
+    }
+
+
+def selection_signature(manifest: dict[str, Any]) -> dict[str, Any]:
+    training_cfg = dict((manifest.get("training") or {}))
+    training_cfg.pop("seed", None)
+    training_cfg.pop("val_fraction", None)
+    return {
+        **inference_signature(manifest),
+        "kl_config": manifest.get("kl_config"),
+        "training_recipe": training_cfg,
+        "focal": dict(manifest.get("focal") or {}),
+    }
+
+
+def validate_ensemble_member_manifests(
+    member_manifests: list[dict[str, Any]],
+    member_paths: list[Path],
+) -> dict[str, Any]:
+    if len(member_manifests) < 2:
+        raise ValueError(
+            "At least two train manifests are required to create an ensemble."
+        )
+
+    base_signature = inference_signature(member_manifests[0])
+    for manifest, path in zip(member_manifests[1:], member_paths[1:]):
+        sig = inference_signature(manifest)
+        if sig["behavior"] != base_signature["behavior"]:
+            raise ValueError(
+                f"Ensemble members must share the same behavior. "
+                f"Expected '{base_signature['behavior']}', got '{sig['behavior']}' in {path}."
+            )
+        for field in (
+            "behavior_idx",
+            "label_columns",
+            "feature_columns",
+            "window",
+            "feature_selection",
+            "training",
+        ):
+            if sig[field] != base_signature[field]:
+                raise ValueError(
+                    f"Ensemble members must share the same {field}. "
+                    f"Mismatch found in {path}."
+                )
+    return base_signature
+
+
+def validate_selection_candidate_manifests(
+    member_manifests: list[dict[str, Any]],
+    member_paths: list[Path],
+) -> dict[str, Any]:
+    if len(member_manifests) < 2:
+        raise ValueError("At least two compatible candidate manifests are required.")
+
+    base_signature = selection_signature(member_manifests[0])
+    for manifest, path in zip(member_manifests[1:], member_paths[1:]):
+        sig = selection_signature(manifest)
+        for field in (
+            "behavior",
+            "behavior_idx",
+            "label_columns",
+            "feature_columns",
+            "window",
+            "feature_selection",
+            "training",
+            "kl_config",
+            "training_recipe",
+            "focal",
+        ):
+            if sig[field] != base_signature[field]:
+                raise ValueError(
+                    f"Selection candidates must share the same {field}. "
+                    f"Mismatch found in {path}."
+                )
+    return base_signature
+
+
+def build_ensemble_manifest_payload(
+    member_paths: list[Path],
+    member_manifests: list[dict[str, Any]],
+    *,
+    name: str | None,
+) -> dict[str, Any]:
+    shared = validate_ensemble_member_manifests(member_manifests, member_paths)
+    member_rows = []
+    for member_path, member_manifest in zip(member_paths, member_manifests):
+        weights_path = resolve_weights_path(member_manifest, member_path)
+        member_rows.append(
+            {
+                "manifest_path": str(member_path.resolve()),
+                "run_dir": str(as_path(member_manifest["run_dir"]).resolve()),
+                "weights_path": str(weights_path.resolve()),
+                "split": member_manifest.get("split"),
+                "val_split": member_manifest.get("val_split"),
+            }
+        )
+
+    return {
+        "manifest_type": "ensemble",
+        "schema_version": 1,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "ensemble_name": name,
+        **shared,
+        "aggregation": {
+            "method": "mean_probability",
+            "n_members": len(member_rows),
+        },
+        "members": member_rows,
+    }
+
+
+def load_prediction_source(path: Path) -> dict[str, Any]:
+    raw = load_yaml(path)
+    if raw.get("manifest_type") == "ensemble":
+        ensemble_manifest = load_ensemble_manifest(path)
+        member_paths = [
+            as_path(member["manifest_path"]).resolve()
+            for member in ensemble_manifest["members"]
+        ]
+        member_manifests = [
+            load_train_manifest(member_path) for member_path in member_paths
+        ]
+        shared = validate_ensemble_member_manifests(member_manifests, member_paths)
+        recorded = inference_signature(ensemble_manifest)
+        if recorded != shared:
+            raise ValueError(
+                f"Ensemble manifest {path} no longer matches its member manifests. "
+                "Recreate the ensemble manifest from the current members."
+            )
+        return {
+            "manifest_kind": "ensemble",
+            "manifest_path": path.resolve(),
+            **recorded,
+            "aggregation": dict(ensemble_manifest["aggregation"]),
+            "members": [
+                {
+                    "manifest_path": member_path,
+                    "manifest": member_manifest,
+                    "weights_path": resolve_weights_path(member_manifest, member_path),
+                }
+                for member_path, member_manifest in zip(member_paths, member_manifests)
+            ],
+        }
+
+    manifest = load_train_manifest(path)
+    return {
+        "manifest_kind": "train",
+        "manifest_path": path.resolve(),
+        **inference_signature(manifest),
+        "aggregation": {"method": "mean_probability", "n_members": 1},
+        "members": [
+            {
+                "manifest_path": path.resolve(),
+                "manifest": manifest,
+                "weights_path": resolve_weights_path(manifest, path),
+            }
+        ],
+    }

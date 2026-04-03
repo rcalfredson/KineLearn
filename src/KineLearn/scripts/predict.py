@@ -19,19 +19,17 @@ try:
     from KineLearn.scripts.eval import (
         build_bouts_from_mask,
         build_loaded_model,
-        load_manifest,
         merge_behavior_frames,
-        resolve_weights_path,
     )
+    from KineLearn.core.manifests import load_prediction_source
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from KineLearn.scripts.eval import (
         build_bouts_from_mask,
         build_loaded_model,
-        load_manifest,
         merge_behavior_frames,
-        resolve_weights_path,
     )
+    from KineLearn.core.manifests import load_prediction_source
 
 
 def available_feature_stems(features_dir: Path) -> list[str]:
@@ -103,7 +101,10 @@ def parse_args() -> argparse.Namespace:
         "--manifest",
         action="append",
         required=True,
-        help="Path to a train_manifest.yml file. Provide once per behavior model.",
+        help=(
+            "Path to either a train_manifest.yml or ensemble_manifest.yml file. "
+            "Provide once per behavior source."
+        ),
     )
     parser.add_argument(
         "--features-dir",
@@ -254,8 +255,9 @@ def run_window_predictions(
     batch_size: int,
     window_size: int,
     base_features: pd.DataFrame,
+    buffers: dict[str, dict[str, np.ndarray]] | None = None,
 ) -> dict[str, dict[str, np.ndarray]]:
-    buffers = prepare_prediction_buffers(base_features)
+    buffers = buffers if buffers is not None else prepare_prediction_buffers(base_features)
     n = int(X_windows.shape[0])
 
     for start_idx in range(0, n, batch_size):
@@ -426,8 +428,8 @@ def main() -> None:
     else:
         stems = known_stems
 
-    manifests = [load_manifest(Path(p)) for p in args.manifest]
-    behaviors = [manifest["behavior"] for manifest in manifests]
+    prediction_sources = [load_prediction_source(Path(p)) for p in args.manifest]
+    behaviors = [source["behavior"] for source in prediction_sources]
     duplicates = sorted({b for b in behaviors if behaviors.count(b) > 1})
     if duplicates:
         raise ValueError(f"Duplicate behaviors in prediction set: {duplicates}")
@@ -440,12 +442,10 @@ def main() -> None:
     bout_tables = []
     manifest_paths = [Path(p).resolve() for p in args.manifest]
 
-    for manifest, manifest_path in zip(manifests, manifest_paths):
-        behavior = manifest["behavior"]
-        weights_path = resolve_weights_path(manifest, manifest_path)
-        model = build_loaded_model(manifest, weights_path)
-        X_behavior = align_manifest_features(manifest, base_features)
-        window_cfg = manifest["window"]
+    for source in prediction_sources:
+        behavior = source["behavior"]
+        X_behavior = align_manifest_features(source, base_features)
+        window_cfg = source["window"]
         window_size = int(window_cfg["size"])
         stride = int(window_cfg["stride"])
 
@@ -454,15 +454,19 @@ def main() -> None:
             window_size=window_size,
             stride=stride,
         )
-        buffers = run_window_predictions(
-            model,
-            X_windows,
-            vids,
-            starts,
-            batch_size=int(args.batch_size),
-            window_size=window_size,
-            base_features=X_behavior,
-        )
+        buffers = None
+        for member in source["members"]:
+            model = build_loaded_model(member["manifest"], member["weights_path"])
+            buffers = run_window_predictions(
+                model,
+                X_windows,
+                vids,
+                starts,
+                batch_size=int(args.batch_size),
+                window_size=window_size,
+                base_features=X_behavior,
+                buffers=buffers,
+            )
         frame_df = frame_table_from_prediction_buffers(
             buffers,
             behavior=behavior,
@@ -482,7 +486,8 @@ def main() -> None:
 
         print(
             f"[{behavior}] Predicted {frame_df['__stem__'].nunique()} videos "
-            f"across {len(frame_df)} reconstructed frames."
+            f"across {len(frame_df)} reconstructed frames "
+            f"using {source['aggregation']['n_members']} model(s)."
         )
 
     merged_frames = merge_behavior_frames(frame_tables)
@@ -519,6 +524,18 @@ def main() -> None:
         "features_dir": str(features_dir.resolve()),
         "out_dir": str(out_dir.resolve()),
         "manifests": [str(path) for path in manifest_paths],
+        "prediction_sources": [
+            {
+                "manifest_kind": source["manifest_kind"],
+                "manifest_path": str(source["manifest_path"]),
+                "behavior": source["behavior"],
+                "aggregation": source["aggregation"],
+                "member_manifest_paths": [
+                    str(member["manifest_path"]) for member in source["members"]
+                ],
+            }
+            for source in prediction_sources
+        ],
         "behaviors": behaviors,
         "n_videos": int(len(stems)),
         "video_stems": list(stems),
