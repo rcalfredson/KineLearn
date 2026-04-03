@@ -384,6 +384,7 @@ It performs:
 5. **Training with focal loss** — optimizes a per-timestep sigmoid classifier, checkpointing on `val_loss`, with optional early stopping.
 6. **Evaluating on test data** — reloads the best checkpointed weights and reports test metrics.
 7. **Recording outputs** — saves all artifacts into a run-specific directory under `results/<behavior>/<timestamp>/`, including a `train_manifest.yml` file summarizing dataset sizes, feature dimensions, training hyperparameters, artifact paths, and evaluation results.
+   You can also provide `--out-dir` when you want to place a run in an explicit directory instead of using a timestamped one.
 
 ---
 
@@ -405,7 +406,7 @@ This will:
 
 Safety notes:
 - Training runs are isolated by behavior and timestamp, so repeated runs do not overwrite one another.
-- If training is interrupted with `Ctrl-C`, KineLearn saves partial run artifacts and a manifest for the interrupted run.
+- If training is interrupted with `Ctrl-C`, KineLearn saves partial run artifacts but does not write `train_manifest.yml`, so interrupted runs remain distinguishable from completed runs.
 
 Optional CLI overrides:
 - `--features-dir` to read features from a directory other than `features/`
@@ -414,6 +415,7 @@ Optional CLI overrides:
 - `--batch-size` to override `training.batch_size`
 - `--seed` to override `training.seed` for a specific run
 - `--focal-alpha` to override the focal-loss alpha for a specific training run
+- `--out-dir` to force the run into a specific output directory
 
 Training config note:
 - Set `training.include_absolute_coordinates: false` to exclude raw absolute `*_x` / `*_y` keypoint columns from model input while still retaining derived motion and geometry features.
@@ -517,12 +519,30 @@ This command writes:
 - `experiment_config.yml` with the sweep settings
 - `experiment_plan.csv` with one row per planned run
 - generated split files under `results/split_variability/<timestamp>/splits/`
-- `results_summary.csv` with one row per completed training run and the captured test metrics
+- per-run training outputs under `results/split_variability/<timestamp>/runs/<outer_id>/inner_seed<seed>/`
+- `results_summary.csv` with one row per completed or resumed training run and the captured test metrics
 
 Practical notes:
 - Omit `--execute` to do a dry run and inspect the planned commands first.
+- To resume an interrupted sweep, point `--resume` at the existing sweep directory. A run is treated as complete only if its run directory contains `train_manifest.yml`; missing or partial run directories are treated as pending, and partial managed run directories are removed before rerunning.
+- Resume mode reuses the existing `experiment_plan.csv` and split files instead of regenerating them.
 - Use fixed training hyperparameters while measuring split sensitivity; otherwise hyperparameter changes and split effects get mixed together.
 - For historical parity/reproduction work, the old October 2025 split definitions are preserved under `data_splits/legacy/`.
+
+Example: inspect an interrupted sweep without launching training
+
+```bash
+kinelearn-split-variability \
+  --resume results/split_variability/ge_nested
+```
+
+Example: resume only the missing or incomplete runs
+
+```bash
+kinelearn-split-variability \
+  --resume results/split_variability/ge_nested \
+  --execute
+```
 
 ---
 ## 📚 Batch-Evaluating Split Sweeps

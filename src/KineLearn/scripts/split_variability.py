@@ -10,6 +10,8 @@ import csv
 from datetime import datetime
 from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 from typing import Any
@@ -56,7 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Measure model sensitivity to train/test and train/val split choice by "
-            "generating reproducible split files and optionally running training."
+            "generating reproducible split files and optionally running training. "
+            "Can also resume an existing split-variability sweep."
         )
     )
     source = parser.add_mutually_exclusive_group(required=True)
@@ -68,8 +71,12 @@ def parse_args() -> argparse.Namespace:
         "--base-split",
         help="Existing train/test split file to hold test set fixed while varying train/val splits.",
     )
-    parser.add_argument("--kl-config", required=True, help="KineLearn config YAML.")
-    parser.add_argument("--behavior", required=True, help="Behavior to train.")
+    source.add_argument(
+        "--resume",
+        help="Existing split-variability output directory to inspect and resume.",
+    )
+    parser.add_argument("--kl-config", default=None, help="KineLearn config YAML.")
+    parser.add_argument("--behavior", default=None, help="Behavior to train.")
     parser.add_argument(
         "--features-dir",
         default="features",
@@ -86,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         "--inner-seeds",
         nargs="+",
         type=int,
-        required=True,
+        default=None,
         help="Seeds for explicit train/val splits within each outer split.",
     )
     parser.add_argument(
@@ -194,6 +201,10 @@ def manifest_from_stdout(stdout: str) -> str | None:
     return matches[-1].strip() if matches else None
 
 
+def run_output_dir(base_out_dir: Path, *, outer_id: str, inner_seed: int | str) -> Path:
+    return base_out_dir / "runs" / str(outer_id) / f"inner_seed{inner_seed}"
+
+
 def build_plan(
     args: argparse.Namespace, out_dir: Path, val_fraction: float
 ) -> list[dict[str, Any]]:
@@ -246,6 +257,8 @@ def build_plan(
                 args.features_dir,
                 "--seed",
                 str(args.seed),
+                "--out-dir",
+                str(run_output_dir(out_dir, outer_id=outer["outer_id"], inner_seed=inner_seed)),
             ]
             if args.focal_alpha is not None:
                 command.extend(["--focal-alpha", str(args.focal_alpha)])
@@ -260,6 +273,13 @@ def build_plan(
                     "train_count": len(inner_train),
                     "val_count": len(inner_val),
                     "test_count": len(outer["test_stems"]),
+                    "run_output_dir": str(
+                        run_output_dir(
+                            out_dir,
+                            outer_id=outer["outer_id"],
+                            inner_seed=inner_seed,
+                        ).resolve()
+                    ),
                     "command": command,
                 }
             )
@@ -277,6 +297,7 @@ def write_plan_csv(path: Path, runs: list[dict[str, Any]]) -> None:
         "train_count",
         "val_count",
         "test_count",
+        "run_output_dir",
         "command",
     ]
     with open(path, "w", newline="") as f:
@@ -284,8 +305,290 @@ def write_plan_csv(path: Path, runs: list[dict[str, Any]]) -> None:
         writer.writeheader()
         for run in runs:
             row = dict(run)
-            row["command"] = " ".join(row["command"])
+            row["command"] = shlex.join(row["command"])
             writer.writerow(row)
+
+
+def load_plan_csv(path: Path) -> list[dict[str, Any]]:
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError(f"No rows found in {path}")
+    required = {"outer_id", "inner_seed", "split_path", "val_split_path", "command"}
+    missing = required - set(rows[0].keys())
+    if missing:
+        raise ValueError(f"{path} is missing required plan columns: {sorted(missing)}")
+    return rows
+
+
+def with_run_output_dir(command: list[str], out_dir: Path) -> list[str]:
+    if "--out-dir" in command:
+        idx = command.index("--out-dir")
+        if idx == len(command) - 1:
+            raise ValueError("Malformed command: --out-dir is missing its value.")
+        updated = list(command)
+        updated[idx + 1] = str(out_dir)
+        return updated
+    return [*command, "--out-dir", str(out_dir)]
+
+
+def parse_run_command(row: dict[str, Any], sweep_dir: Path) -> list[str]:
+    command_field = row.get("command")
+    if not command_field:
+        raise ValueError("Plan row is missing the command field.")
+    command = shlex.split(command_field)
+    managed_out_dir = managed_run_output_dir(row, sweep_dir)
+    return with_run_output_dir(command, managed_out_dir)
+
+
+def load_summary_rows(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    return {(row["outer_id"], row["inner_seed"]): row for row in rows}
+
+
+def infer_manifest_path_from_run_dir(run_dir: Path) -> Path | None:
+    manifest_path = run_dir / "train_manifest.yml"
+    return manifest_path.resolve() if manifest_path.exists() else None
+
+
+def infer_manifest_path_from_summary(row: dict[str, Any]) -> Path | None:
+    manifest_path = row.get("manifest_path")
+    if not manifest_path:
+        return None
+    candidate = Path(manifest_path)
+    return candidate.resolve() if candidate.exists() else None
+
+
+def infer_manifest_path_by_split_match(
+    sweep_dir: Path,
+    *,
+    split_path: str,
+    val_split_path: str,
+) -> Path | None:
+    candidates = list(sweep_dir.rglob("train_manifest.yml"))
+    for candidate in candidates:
+        try:
+            manifest = load_yaml(candidate)
+        except Exception:
+            continue
+        if (
+            manifest.get("split") == str(Path(split_path).resolve())
+            and manifest.get("val_split") == str(Path(val_split_path).resolve())
+        ):
+            return candidate.resolve()
+    return None
+
+
+def managed_run_output_dir(row: dict[str, Any], sweep_dir: Path) -> Path:
+    configured = row.get("run_output_dir")
+    if configured:
+        return Path(configured)
+    return run_output_dir(
+        sweep_dir,
+        outer_id=row["outer_id"],
+        inner_seed=row["inner_seed"],
+    )
+
+
+def inspect_resume_runs(
+    sweep_dir: Path,
+    plan_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    summary_rows = load_summary_rows(sweep_dir / "results_summary.csv")
+    inspected: list[dict[str, Any]] = []
+
+    for row in plan_rows:
+        run_key = (row["outer_id"], row["inner_seed"])
+        run_dir = managed_run_output_dir(row, sweep_dir)
+        manifest_path = infer_manifest_path_from_run_dir(run_dir)
+        if manifest_path is None:
+            manifest_path = infer_manifest_path_from_summary(summary_rows.get(run_key, {}))
+        if manifest_path is None:
+            manifest_path = infer_manifest_path_by_split_match(
+                sweep_dir,
+                split_path=row["split_path"],
+                val_split_path=row["val_split_path"],
+            )
+
+        state = "complete" if manifest_path is not None else "pending"
+        inspected.append(
+            {
+                **row,
+                "run_output_dir": str(run_dir.resolve()),
+                "command_list": parse_run_command(row, sweep_dir),
+                "manifest_path": str(manifest_path) if manifest_path is not None else None,
+                "state": state,
+                "has_partial_run_dir": bool(run_dir.exists() and manifest_path is None),
+            }
+        )
+
+    return inspected
+
+
+def cleanup_incomplete_run_dir(run: dict[str, Any]) -> bool:
+    run_dir = Path(run["run_output_dir"])
+    if run["state"] == "complete" or not run_dir.exists():
+        return False
+    shutil.rmtree(run_dir)
+    return True
+
+
+def summarize_resume_runs(runs: list[dict[str, Any]]) -> dict[str, int]:
+    total = len(runs)
+    complete = sum(1 for run in runs if run["state"] == "complete")
+    pending = total - complete
+    incomplete = sum(1 for run in runs if run["has_partial_run_dir"])
+    missing = pending - incomplete
+    return {
+        "total": total,
+        "complete": complete,
+        "pending": pending,
+        "incomplete": incomplete,
+        "missing": missing,
+    }
+
+
+def print_resume_report(runs: list[dict[str, Any]], *, execute: bool) -> None:
+    summary = summarize_resume_runs(runs)
+    print(
+        "Resume summary: "
+        f"planned={summary['total']}, "
+        f"complete={summary['complete']}, "
+        f"pending={summary['pending']}, "
+        f"incomplete={summary['incomplete']}, "
+        f"missing={summary['missing']}"
+    )
+
+    completed_runs = [run for run in runs if run["state"] == "complete"]
+    if completed_runs:
+        print("Completed runs:")
+        for run in completed_runs:
+            print(
+                f"  - outer={run['outer_id']}, inner_seed={run['inner_seed']} "
+                f"-> {run['manifest_path']}"
+            )
+
+    incomplete_runs = [run for run in runs if run["has_partial_run_dir"]]
+    if incomplete_runs:
+        print("Incomplete runs found:")
+        for run in incomplete_runs:
+            print(
+                f"  - outer={run['outer_id']}, inner_seed={run['inner_seed']} "
+                f"-> {run['run_output_dir']}"
+            )
+
+    pending_runs = [run for run in runs if run["state"] != "complete"]
+    if pending_runs:
+        verb = "Will rerun" if execute else "Would rerun"
+        print(f"{verb}:")
+        for run in pending_runs:
+            print(
+                f"  - outer={run['outer_id']}, inner_seed={run['inner_seed']} "
+                f"-> {run['run_output_dir']}"
+            )
+    else:
+        print("No pending runs detected.")
+
+
+def validate_new_plan_args(args: argparse.Namespace) -> None:
+    missing = []
+    if not args.kl_config:
+        missing.append("--kl-config")
+    if not args.behavior:
+        missing.append("--behavior")
+    if not args.inner_seeds:
+        missing.append("--inner-seeds")
+    if missing:
+        raise ValueError(
+            "The following arguments are required unless --resume is used: "
+            + ", ".join(missing)
+        )
+
+
+def execute_runs(
+    runs: list[dict[str, Any]],
+    *,
+    out_dir: Path,
+    clean_incomplete: bool,
+) -> list[dict[str, Any]]:
+    summary_rows: list[dict[str, Any]] = []
+
+    for idx, run in enumerate(runs, start=1):
+        if run["state"] == "complete":
+            summary_rows.append(
+                {
+                    "outer_id": run["outer_id"],
+                    "outer_seed": run.get("outer_seed"),
+                    "inner_seed": run["inner_seed"],
+                    "split_path": run["split_path"],
+                    "val_split_path": run["val_split_path"],
+                    "run_output_dir": run["run_output_dir"],
+                    "status": "complete_existing",
+                    "returncode": 0,
+                    "manifest_path": run["manifest_path"],
+                }
+            )
+            aggregate_results(out_dir / "results_summary.csv", summary_rows)
+            continue
+
+        print(
+            f"\n=== Run {idx}/{len(runs)} "
+            f"(outer={run['outer_id']}, inner_seed={run['inner_seed']}) ==="
+        )
+
+        cleaned = False
+        if clean_incomplete and cleanup_incomplete_run_dir(run):
+            cleaned = True
+            print(f"🧹 Removed incomplete run directory {run['run_output_dir']}")
+
+        Path(run["run_output_dir"]).mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run(
+            run["command_list"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.stdout:
+            print(completed.stdout, end="")
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+
+        manifest_path = infer_manifest_path_from_run_dir(Path(run["run_output_dir"]))
+        if manifest_path is None:
+            manifest_path_str = manifest_from_stdout(completed.stdout)
+            if manifest_path_str:
+                candidate = Path(manifest_path_str)
+                if candidate.exists():
+                    manifest_path = candidate.resolve()
+
+        row = {
+            "outer_id": run["outer_id"],
+            "outer_seed": run.get("outer_seed"),
+            "inner_seed": run["inner_seed"],
+            "split_path": run["split_path"],
+            "val_split_path": run["val_split_path"],
+            "run_output_dir": run["run_output_dir"],
+            "status": "rerun" if cleaned else "executed",
+            "returncode": int(completed.returncode),
+            "manifest_path": str(manifest_path) if manifest_path is not None else None,
+        }
+
+        if manifest_path is not None and manifest_path.exists():
+            manifest = load_yaml(manifest_path)
+            training_run = manifest.get("training_run", {})
+            test_metrics = training_run.get("test_metrics", {})
+            row["best_epoch_by_val_loss"] = training_run.get("best_epoch_by_val_loss")
+            row["epochs_completed"] = training_run.get("epochs_completed")
+            for key, value in test_metrics.items():
+                row[f"test_{key}"] = value
+
+        summary_rows.append(row)
+        aggregate_results(out_dir / "results_summary.csv", summary_rows)
+
+    return summary_rows
 
 
 def aggregate_results(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -301,6 +604,25 @@ def aggregate_results(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.resume:
+        out_dir = Path(args.resume)
+        plan_path = out_dir / "experiment_plan.csv"
+        if not out_dir.is_dir():
+            raise FileNotFoundError(f"Resume directory not found: {out_dir}")
+        if not plan_path.exists():
+            raise FileNotFoundError(f"Expected experiment plan not found: {plan_path}")
+
+        runs = inspect_resume_runs(out_dir, load_plan_csv(plan_path))
+        print_resume_report(runs, execute=args.execute)
+        if not args.execute:
+            print("Dry run only; no trainings launched.")
+            return
+
+        execute_runs(runs, out_dir=out_dir, clean_incomplete=True)
+        print(f"\n📝 Wrote {out_dir / 'results_summary.csv'}")
+        return
+
+    validate_new_plan_args(args)
     out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -334,53 +656,22 @@ def main() -> None:
     )
     print(f"📝 Wrote {out_dir / 'experiment_plan.csv'}")
 
+    prepared_runs = [
+        {
+            **run,
+            "state": "pending",
+            "command_list": list(run["command"]),
+            "manifest_path": None,
+            "has_partial_run_dir": False,
+        }
+        for run in runs
+    ]
+
     if not args.execute:
         print("Dry run only; no trainings launched.")
         return
 
-    summary_rows: list[dict[str, Any]] = []
-    for idx, run in enumerate(runs, start=1):
-        print(
-            f"\n=== Run {idx}/{len(runs)} "
-            f"(outer={run['outer_id']}, inner_seed={run['inner_seed']}) ==="
-        )
-        completed = subprocess.run(
-            run["command"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if completed.stdout:
-            print(completed.stdout, end="")
-        if completed.stderr:
-            print(completed.stderr, file=sys.stderr, end="")
-
-        row = {
-            "outer_id": run["outer_id"],
-            "outer_seed": run["outer_seed"],
-            "inner_seed": run["inner_seed"],
-            "split_path": run["split_path"],
-            "val_split_path": run["val_split_path"],
-            "returncode": int(completed.returncode),
-            "manifest_path": None,
-        }
-
-        manifest_path_str = manifest_from_stdout(completed.stdout)
-        if manifest_path_str:
-            manifest_path = Path(manifest_path_str)
-            row["manifest_path"] = str(manifest_path.resolve())
-            if manifest_path.exists():
-                manifest = load_yaml(manifest_path)
-                training_run = manifest.get("training_run", {})
-                test_metrics = training_run.get("test_metrics", {})
-                row["best_epoch_by_val_loss"] = training_run.get("best_epoch_by_val_loss")
-                row["epochs_completed"] = training_run.get("epochs_completed")
-                for key, value in test_metrics.items():
-                    row[f"test_{key}"] = value
-
-        summary_rows.append(row)
-        aggregate_results(out_dir / "results_summary.csv", summary_rows)
-
+    execute_runs(prepared_runs, out_dir=out_dir, clean_incomplete=False)
     print(f"\n📝 Wrote {out_dir / 'results_summary.csv'}")
 
 

@@ -394,6 +394,13 @@ def main():
             "Useful for split-specific tuning in single-behavior training."
         ),
     )
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help=(
+            "Optional run output directory. Defaults to results/<behavior>/<timestamp>/."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -486,8 +493,11 @@ def main():
         stems_b=test_stems,
     )
 
-    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path("results") / behavior / run_timestamp
+    if args.out_dir:
+        run_dir = Path(args.out_dir)
+    else:
+        run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = Path("results") / behavior / run_timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
     out = run_dir
 
@@ -921,6 +931,10 @@ def main():
         print("\n⚠️  Training interrupted; saving partial run artifacts.")
         model.save_weights(str(interrupted_ckpt_path))
         history_data = history_capture.history
+        print(
+            "⚠️  Leaving partial artifacts without train_manifest.yml so the run can be resumed cleanly."
+        )
+        raise SystemExit(130)
 
     val_loss_history = history_data.get("val_loss", [])
     best_epoch = (
